@@ -1,7 +1,5 @@
--- [[
-    Steal DNA / Украсть ДНК — Ultimate Script Hub
-    Built with WindUI
-]]
+-- Steal DNA / Украсть ДНК — Ultimate Script Hub
+-- Built with WindUI
 
 if _G.StealDNAScriptLoaded and _G.StealDNAScriptUnload then
     pcall(_G.StealDNAScriptUnload)
@@ -28,12 +26,39 @@ end)
 local Net = require(ReplicatedStorage.Shared.Net)
 local Config = require(ReplicatedStorage.Shared.Config)
 
-local WindUIBody = (request or http_request)({
-    Url = "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua",
-    Method = "GET"
-}).Body
+-- Загрузка интерфейса WindUI (с поддержкой разных экзекуторов)
+local WindUI
+local reqFunc = (type(request) == "function" and request) 
+    or (type(http_request) == "function" and http_request)
+    or (syn and type(syn.request) == "function" and syn.request)
+    or (http and type(http.request) == "function" and http.request)
 
-local WindUI = loadstring(WindUIBody)()
+if reqFunc then
+    local s, res = pcall(function()
+        return reqFunc({
+            Url = "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua",
+            Method = "GET"
+        })
+    end)
+    if s and res and res.Body then
+        local fn = loadstring(res.Body)
+        if fn then WindUI = fn() end
+    end
+end
+
+if not WindUI then
+    local s, body = pcall(function()
+        return game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua")
+    end)
+    if s and body then
+        local fn = loadstring(body)
+        if fn then WindUI = fn() end
+    end
+end
+
+if not WindUI then
+    error("Failed to load WindUI library")
+end
 
 local Window = WindUI:CreateWindow({
     Title = "Steal DNA Hub",
@@ -636,7 +661,7 @@ Tabs.Player:Button({
 })
 
 WindUI:Notify({
-    Title = "Украсть ДНК Hub",
+    Title = "Steal DNA Hub",
     Content = "Скрипт успешно запущен и готов к работе!",
     Duration = 4
 })
