@@ -124,6 +124,8 @@ local Flags = {
     WebhookPeriodic = false,
     PeriodicInterval = 10,
     PatrolFarm = false,
+    PatrolScope = "All",
+    PatrolSelectedBiome = "Радуга (Rainbow)",
     PatrolOnlySpeed = false,
     PatrolDirection = "TopDown",
     PatrolPriority = "BestFirst",
@@ -242,11 +244,15 @@ local function sendSessionReportWebhook()
     local uptime = formatDuration(os.time() - SessionStats.StartTime)
     local ping = getPing()
 
+    local farmStatus = Flags.PatrolFarm 
+        and (Flags.PatrolScope == "Single" and ("ВКЛ ✅ (" .. tostring(Flags.PatrolSelectedBiome) .. ")") or "ВКЛ ✅ (Все локации)")
+        or "ВЫКЛ ❌"
+
     local botsSummary = string.format(
-        "• Тренировка: %s\n• Супер-клик (5x): %s\n• Авто-облёт карты: %s\n• Авто-кража цели: %s\n• Авто-мутатор: %s",
+        "• Тренировка: %s\n• Супер-клик (5x): %s\n• Авто-фарм локаций: %s\n• Точечная авто-кража: %s\n• Авто-мутатор: %s",
         Flags.AutoTrain and "ВКЛ ✅" or "ВЫКЛ ❌",
         Flags.FastClick and "ВКЛ ✅" or "ВЫКЛ ❌",
-        Flags.PatrolFarm and "ВКЛ ✅" or "ВЫКЛ ❌",
+        farmStatus,
         Flags.AutoSteal and ("ВКЛ ✅ (" .. tostring(Flags.SelectedAnimal) .. ")") or "ВЫКЛ ❌",
         Flags.AutoFinishMutation and "ВКЛ ✅" or "ВЫКЛ ❌"
     )
@@ -560,15 +566,27 @@ local function runPatrolFarmStep()
     local animalsFolder = workspace:FindFirstChild("Animals")
     if not animalsFolder then return end
 
-    -- Формируем список биомов в соответствии с выбранным направлением
+    -- Формируем список биомов в соответствии с выбранным режимом
     local biomeList = {}
-    if Flags.PatrolDirection == "TopDown" then
-        for i = #biomes, 1, -1 do
-            table.insert(biomeList, biomes[i])
+    if Flags.PatrolScope == "Single" then
+        for _, b in ipairs(biomes) do
+            if b.Name == Flags.PatrolSelectedBiome then
+                table.insert(biomeList, b)
+                break
+            end
+        end
+        if #biomeList == 0 then
+            table.insert(biomeList, biomes[#biomes])
         end
     else
-        for i = 1, #biomes do
-            table.insert(biomeList, biomes[i])
+        if Flags.PatrolDirection == "TopDown" then
+            for i = #biomes, 1, -1 do
+                table.insert(biomeList, biomes[i])
+            end
+        else
+            for i = 1, #biomes do
+                table.insert(biomeList, biomes[i])
+            end
         end
     end
 
@@ -666,11 +684,11 @@ end
 -- ЭЛЕМЕНТЫ ВКЛАДКИ "ФАРМ И КРАЖА"
 -- ====================================================================
 
-Tabs.Farm:Section({ Title = "🌍 Авто-облёт локаций (Решение непрогруза)" })
+Tabs.Farm:Section({ Title = "🌍 Авто-фарм локаций (Решение непрогруза)" })
 
 Tabs.Farm:Toggle({
-    Title = "Авто-облёт всех биомов (Patrol)",
-    Desc = "Последовательно облетает локации карты, прогружает чанки и ворует ДНК у всех доступных спящих животных",
+    Title = "Включить авто-фарм локаций (Patrol)",
+    Desc = "Автоматически ворует ДНК в выбранных локациях, принудительно прогружая чанки",
     Value = false,
     Callback = function(val)
         Flags.PatrolFarm = val
@@ -686,7 +704,32 @@ Tabs.Farm:Toggle({
 })
 
 Tabs.Farm:Dropdown({
-    Title = "Направление облёта биомов",
+    Title = "Режим выбора локаций",
+    Desc = "Фармить одну конкретную локацию или облетать все локации по кругу",
+    Values = { "Все локации по кругу", "Только одна выбранная локация" },
+    Value = "Все локации по кругу",
+    Callback = function(sel)
+        Flags.PatrolScope = (sel == "Только одна выбранная локация") and "Single" or "All"
+    end
+})
+
+local biomeNamesList = {}
+for _, b in ipairs(biomes) do
+    table.insert(biomeNamesList, b.Name)
+end
+
+Tabs.Farm:Dropdown({
+    Title = "Выберите локацию для фарма",
+    Desc = "Активно при режиме 'Только одна выбранная локация'",
+    Values = biomeNamesList,
+    Value = biomeNamesList[#biomeNamesList],
+    Callback = function(sel)
+        Flags.PatrolSelectedBiome = sel
+    end
+})
+
+Tabs.Farm:Dropdown({
+    Title = "Направление облёта (для всех локаций)",
     Desc = "Рекомендуется 'От лучших (Радуга ➔ Лес)', чтобы сразу лутать топовую ДНК",
     Values = { "От лучших к начальным (Радуга ➔ Лес)", "От начальных к лучшим (Лес ➔ Радуга)" },
     Value = "От лучших к начальным (Радуга ➔ Лес)",
