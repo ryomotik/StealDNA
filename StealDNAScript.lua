@@ -1,4 +1,5 @@
 -- Steal DNA / Украсть ДНК — Ultimate Script Hub
+-- Author: ryomotik
 -- Built with WindUI
 
 if _G.StealDNAScriptLoaded and _G.StealDNAScriptUnload then
@@ -11,6 +12,7 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
 
 local LocalPlayer = Players.LocalPlayer
 local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
@@ -26,12 +28,17 @@ end)
 local Net = require(ReplicatedStorage.Shared.Net)
 local Config = require(ReplicatedStorage.Shared.Config)
 
--- Загрузка интерфейса WindUI (с поддержкой разных экзекуторов)
+-- Универсальная функция HTTP-запросов (поддержка всех экзекуторов)
+local function getRequestFunc()
+    return (type(request) == "function" and request)
+        or (type(http_request) == "function" and http_request)
+        or (syn and type(syn.request) == "function" and syn.request)
+        or (http and type(http.request) == "function" and http.request)
+end
+
+-- Загрузка интерфейса WindUI
 local WindUI
-local reqFunc = (type(request) == "function" and request) 
-    or (type(http_request) == "function" and http_request)
-    or (syn and type(syn.request) == "function" and syn.request)
-    or (http and type(http.request) == "function" and http.request)
+local reqFunc = getRequestFunc()
 
 if reqFunc then
     local s, res = pcall(function()
@@ -60,25 +67,40 @@ if not WindUI then
     error("Failed to load WindUI library")
 end
 
+-- Создание окна хаба
 local Window = WindUI:CreateWindow({
     Title = "Steal DNA Hub",
-    Author = "by Antigravity",
+    Author = "by ryomotik",
     Folder = "StealDNA_Hub",
     Icon = "dna",
-    Size = UDim2.fromOffset(600, 470),
+    Size = UDim2.fromOffset(600, 480),
     Transparent = true,
     Theme = "Dark",
     Resizable = true,
+    ToggleKey = Enum.KeyCode.RightControl,
+    OpenButton = {
+        Title = "Steal DNA",
+        Icon = "dna",
+        CornerRadius = UDim.new(0, 16),
+        StrokeThickness = 2,
+        Color = ColorSequence.new(Color3.fromRGB(0, 255, 170), Color3.fromRGB(0, 140, 255)),
+        OnlyMobile = false,
+        Enabled = true,
+        Draggable = true,
+    }
 })
 
+-- Вкладки
 local Tabs = {
     Farm = Window:Tab({ Title = "Фарм и Кража", Icon = "flame" }),
     Base = Window:Tab({ Title = "База и Мутации", Icon = "home" }),
+    Discord = Window:Tab({ Title = "Discord Webhook", Icon = "message-square" }),
     Teleports = Window:Tab({ Title = "Телепорты", Icon = "map-pin" }),
     ESP = Window:Tab({ Title = "ESP Животных", Icon = "eye" }),
-    Player = Window:Tab({ Title = "Игрок", Icon = "user" }),
+    Player = Window:Tab({ Title = "Игрок и Демка", Icon = "user" }),
 }
 
+-- Таблица настроек и состояний
 local Flags = {
     AutoTrain = false,
     FastClick = false,
@@ -95,8 +117,46 @@ local Flags = {
     JumpPower = 50,
     InfJump = false,
     Noclip = false,
+    StreamerMode = false,
+    WebhookURL = "",
+    WebhookSteal = true,
+    WebhookMutant = true,
 }
 
+-- Функция отправки сообщений в Discord Webhook
+local function sendDiscordWebhook(title, description, color, fields)
+    if not Flags.WebhookURL or Flags.WebhookURL == "" then return end
+    local req = getRequestFunc()
+    if not req then return end
+
+    local embed = {
+        title = title,
+        description = description,
+        color = color or 5814783,
+        fields = fields or {},
+        footer = { text = "Steal DNA Hub • by ryomotik" },
+        timestamp = DateTime.now():ToIsoDate()
+    }
+
+    local payload = HttpService:JSONEncode({
+        username = "Steal DNA Hub",
+        avatar_url = "https://i.imgur.com/83pA8y7.png",
+        embeds = { embed }
+    })
+
+    task.spawn(function()
+        pcall(function()
+            req({
+                Url = Flags.WebhookURL,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = payload
+            })
+        end)
+    end)
+end
+
+-- Хелперы игры
 local function getMyPlot()
     local pIdx = LocalPlayer:GetAttribute("Plot")
     if not pIdx then return nil end
@@ -286,6 +346,22 @@ local function stealDnaOnce(targetAnimalId)
         Content = "+1 ДНК " .. targetAnimalId .. " успешно получено!",
         Duration = 3
     })
+
+    if Flags.WebhookSteal then
+        local speedVal = tostring(LocalPlayer:GetAttribute("Speed") or "0")
+        local playerName = Flags.StreamerMode and "[Скрыто на демке]" or LocalPlayer.Name
+        sendDiscordWebhook(
+            "🧬 Успешная кража ДНК!",
+            "Игрок успешно украл ДНК и ушел в безопасную зону.",
+            65280,
+            {
+                { name = "Зверь", value = tostring(targetAnimalId), inline = true },
+                { name = "Скорость", value = speedVal, inline = true },
+                { name = "Игрок", value = playerName, inline = true }
+            }
+        )
+    end
+
     return true
 end
 
@@ -354,6 +430,20 @@ Tabs.Base:Toggle({
                             local inc = incs:FindFirstChild("Incubator" .. i)
                             if inc and (inc:GetAttribute("Ready") == true or inc:GetAttribute("HasJob") == true) then
                                 Net.Fire("FinishMutation", i)
+                                if Flags.WebhookMutant then
+                                    local mName = inc:GetAttribute("MutantName") or "Мутант"
+                                    local pName = Flags.StreamerMode and "[Скрыто]" or LocalPlayer.Name
+                                    sendDiscordWebhook(
+                                        "🔬 Мутант созрел и собран!",
+                                        "Забрали мутанта из инкубатора #" .. i,
+                                        16753920,
+                                        {
+                                            { name = "Мутант", value = tostring(mName), inline = true },
+                                            { name = "Слот", value = "#" .. i, inline = true },
+                                            { name = "Игрок", value = pName, inline = true }
+                                        }
+                                    )
+                                end
                             end
                         end
                     end
@@ -430,7 +520,66 @@ Tabs.Base:Toggle({
 })
 
 -- ====================================================================
--- 3. ВКЛАДКА "ТЕЛЕПОРТЫ"
+-- 3. ВКЛАДКА "DISCORD WEBHOOK"
+-- ====================================================================
+
+Tabs.Discord:Section({ Title = "Подключение Discord Вебхука" })
+
+Tabs.Discord:Input({
+    Title = "Discord Webhook URL",
+    Desc = "Вставьте ссылку на ваш вебхук в канале Discord",
+    Default = Flags.WebhookURL,
+    Placeholder = "https://discord.com/api/webhooks/...",
+    Callback = function(val)
+        Flags.WebhookURL = val
+    end
+})
+
+Tabs.Discord:Button({
+    Title = "🔔 Отправить тестовое сообщение",
+    Desc = "Проверяет корректность вебхука и шлет тестовый эмбед в Discord",
+    Callback = function()
+        if not Flags.WebhookURL or Flags.WebhookURL == "" then
+            WindUI:Notify({ Title = "Ошибка", Content = "Сначала вставьте URL вебхука!", Duration = 3 })
+            return
+        end
+        local pName = Flags.StreamerMode and "[Скрыто на демке]" or LocalPlayer.Name
+        sendDiscordWebhook(
+            "🔔 Проверка связи с Discord!",
+            "Вебхук успешно подключен и настроен в Steal DNA Hub!",
+            3447003,
+            {
+                { name = "Статус", value = "Активен ✅", inline = true },
+                { name = "Игрок", value = pName, inline = true },
+                { name = "Автор хаба", value = "ryomotik", inline = true }
+            }
+        )
+        WindUI:Notify({ Title = "Discord", Content = "Тестовое сообщение отправлено!", Duration = 3 })
+    end
+})
+
+Tabs.Discord:Section({ Title = "Настройки оповещений" })
+
+Tabs.Discord:Toggle({
+    Title = "Оповещать при краже ДНК",
+    Desc = "Шлет сообщение в Discord каждый раз при успешном сборе ДНК",
+    Value = true,
+    Callback = function(val)
+        Flags.WebhookSteal = val
+    end
+})
+
+Tabs.Discord:Toggle({
+    Title = "Оповещать при выведении Мутанта",
+    Desc = "Шлет сообщение в Discord при сборе готового мутанта",
+    Value = true,
+    Callback = function(val)
+        Flags.WebhookMutant = val
+    end
+})
+
+-- ====================================================================
+-- 4. ВКЛАДКА "ТЕЛЕПОРТЫ"
 -- ====================================================================
 
 Tabs.Teleports:Section({ Title = "База" })
@@ -495,7 +644,7 @@ Tabs.Teleports:Button({
 })
 
 -- ====================================================================
--- 4. ВКЛАДКА "ESP ЖИВОТНЫХ"
+-- 5. ВКЛАДКА "ESP ЖИВОТНЫХ"
 -- ====================================================================
 
 Tabs.ESP:Section({ Title = "Подсветка спящих животных" })
@@ -571,8 +720,35 @@ RunService.RenderStepped:Connect(function()
 end)
 
 -- ====================================================================
--- 5. ВКЛАДКА "ИГРОК И ДВИЖЕНИЕ"
+-- 6. ВКЛАДКА "ИГРОК И ДЕМКА"
 -- ====================================================================
+
+Tabs.Player:Section({ Title = "🖥️ Режим для Демки (Discord Screen Share)" })
+
+Tabs.Player:Toggle({
+    Title = "Режим Стримера / Демка (Скрыть ник)",
+    Desc = "Заменяет ваш ник над головой на 'Player', чтобы не спалить аккаунт на показе экрана",
+    Value = false,
+    Callback = function(val)
+        Flags.StreamerMode = val
+        if Character and Character:FindFirstChildOfClass("Humanoid") then
+            Character.Humanoid.DisplayName = val and "Player" or LocalPlayer.DisplayName
+        end
+        WindUI:Notify({
+            Title = "Режим Демки",
+            Content = val and "Ник замаскирован под 'Player'!" or "Реальный ник возвращен.",
+            Duration = 3
+        })
+    end
+})
+
+Tabs.Player:Button({
+    Title = "Скрыть / Показать меню хаба",
+    Desc = "Также можно нажимать горячую клавишу RightControl или Insert",
+    Callback = function()
+        Window:Toggle()
+    end
+})
 
 Tabs.Player:Section({ Title = "Модификаторы персонажа" })
 
@@ -633,6 +809,13 @@ RunService.Stepped:Connect(function()
     end
 end)
 
+-- Горячая клавиша Insert для открытия/закрытия
+UserInputService.InputBegan:Connect(function(input, processed)
+    if not processed and input.KeyCode == Enum.KeyCode.Insert then
+        Window:Toggle()
+    end
+end)
+
 Tabs.Player:Section({ Title = "Управление скриптом" })
 
 _G.StealDNAScriptUnload = function()
@@ -645,6 +828,9 @@ _G.StealDNAScriptUnload = function()
     Flags.AutoUpgradeMutator = false
     Flags.ESPEnabled = false
     Flags.Noclip = false
+    if Character and Character:FindFirstChildOfClass("Humanoid") then
+        Character.Humanoid.DisplayName = LocalPlayer.DisplayName
+    end
     clearESP()
     espFolder:Destroy()
     Window:Destroy()
@@ -662,6 +848,6 @@ Tabs.Player:Button({
 
 WindUI:Notify({
     Title = "Steal DNA Hub",
-    Content = "Скрипт успешно запущен и готов к работе!",
+    Content = "Скрипт успешно запущен! Автор: ryomotik",
     Duration = 4
 })
