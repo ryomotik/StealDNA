@@ -1056,58 +1056,153 @@ local function fuseAvailableDna()
     end
 end
 
+-- Проверка, созрел ли мутант в инкубаторе для бесплатного сбора
+local function isIncubatorReady(inc)
+    if not inc then return false end
+    if inc:GetAttribute("Ready") == true then
+        return true
+    end
+    local prompt = inc:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if prompt and prompt.Enabled and prompt.ActionText == "Claim" then
+        return true
+    end
+    local jobEnd = inc:GetAttribute("JobEnd")
+    if jobEnd and inc:GetAttribute("HasJob") == true then
+        local now = workspace:GetServerTimeNow()
+        if jobEnd <= now then
+            return true
+        end
+    end
+    return false
+end
+
+-- Сбор мутанта из конкретного инкубатора (персонаж подходит и забирает через ProximityPrompt без доната)
+local function claimIncubator(inc, slotIndex)
+    if not inc or not isIncubatorReady(inc) then return false end
+    local prompt = inc:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if not prompt then return false end
+
+    local slotPart = prompt.Parent
+    if not slotPart or not slotPart:IsA("BasePart") or not HRP then return false end
+
+    local mutantName = inc:GetAttribute("MutantName") or ("Мутант #" .. tostring(slotIndex))
+
+    -- Остановка тренировки на время сбора
+    if LocalPlayer:GetAttribute("Training") then
+        Net.Fire("TrainStop")
+        task.wait(0.15)
+    end
+
+    -- Персонаж подходит прямо к фюз-машине перед MutantSlot
+    local targetCF = slotPart.CFrame * CFrame.new(0, -0.6, 3.2)
+    HRP.CFrame = CFrame.new(targetCF.Position, slotPart.Position)
+    task.wait(0.2)
+
+    -- Активация ProximityPrompt для бесплатного сбора готового мутанта
+    if fireproximityprompt then
+        pcall(function() fireproximityprompt(prompt, 1) end)
+    else
+        pcall(function()
+            prompt:InputHoldBegin()
+            task.wait(prompt.HoldDuration or 0)
+            prompt:InputHoldEnd()
+        end)
+    end
+
+    task.wait(0.35)
+
+    SessionStats.MutantsClaimed = SessionStats.MutantsClaimed + 1
+    SessionStats.LastMutant = tostring(mutantName)
+
+    WindUI:Notify({
+        Title = "Мутатор",
+        Content = "Забран мутант: " .. tostring(mutantName) .. " (Слот #" .. tostring(slotIndex) .. ")",
+        Duration = 3
+    })
+
+    if Flags.WebhookMutant then
+        local pName = Flags.StreamerMode and "[Скрыто на демке]" or (LocalPlayer.Name .. " (" .. LocalPlayer.DisplayName .. ")")
+        local curCash = getPlayerCash()
+        local curSpeed = getPlayerSpeed()
+        local uptime = formatDuration(os.time() - SessionStats.StartTime)
+
+        sendDiscordWebhook(
+            "🔬 Мутант забран из инкубатора!",
+            "Персонаж подошел к фюз-машине и бесплатно забрал готового мутанта!",
+            10181046,
+            {
+                { name = "🧬 Мутант", value = tostring(mutantName), inline = true },
+                { name = "📦 Слот инкубатора", value = "Слот #" .. tostring(slotIndex), inline = true },
+                { name = "🏆 Собрано мутантов", value = tostring(SessionStats.MutantsClaimed) .. " шт.", inline = true },
+
+                { name = "💰 Баланс ($)", value = "$" .. curCash, inline = true },
+                { name = "🏃 Текущая скорость", value = curSpeed .. " ⚡", inline = true },
+                { name = "⏱️ Время сессии", value = uptime, inline = true },
+
+                { name = "👤 Игрок", value = pName, inline = true },
+                { name = "🏡 Участок", value = "Plot #" .. tostring(LocalPlayer:GetAttribute("Plot") or "?"), inline = true },
+            }
+        )
+    end
+
+    return true
+end
+
+-- Обход и сбор всех готовых мутантов на базе
+local function claimAllReadyMutants()
+    local plot = getMyPlot()
+    local incs = plot and plot:FindFirstChild("Incubators")
+    if not incs then return 0 end
+
+    local claimed = 0
+    local origCF = HRP and HRP.CFrame
+
+    for i = 1, 5 do
+        local inc = incs:FindFirstChild("Incubator" .. i)
+        if inc and isIncubatorReady(inc) then
+            local ok = claimIncubator(inc, i)
+            if ok then
+                claimed = claimed + 1
+                task.wait(0.2)
+            end
+        end
+    end
+
+    if claimed > 0 then
+        -- Возвращаемся обратно, если тренировались на дорожке
+        if Flags.AutoTrain and plot then
+            task.wait(0.2)
+            local tm = plot:FindFirstChild("Treadmill")
+            local belt = tm and tm:FindFirstChild("Belt")
+            if belt and HRP then
+                HRP.CFrame = belt.CFrame + Vector3.new(0, 3, 0)
+                task.wait(0.2)
+                Net.Fire("TrainStart")
+            end
+        elseif origCF and HRP then
+            HRP.CFrame = origCF
+        end
+
+        -- Авто-слияние освободившихся слотов
+        if Flags.AutoFuse then
+            task.delay(0.5, fuseAvailableDna)
+        end
+    end
+
+    return claimed
+end
+
 Tabs.Base:Toggle({
-    Title = "Авто-сбор готовых мутантов",
-    Desc = "Автоматически забирает созданных мутантов из инкубаторов базы",
+    Title = "Авто-сбор мутантов (Подходить и забирать)",
+    Desc = "Персонаж сам подходит к готовым фюз-машинам и бесплатно забирает мутантов (без доната!)",
     Value = false,
     Callback = function(val)
         Flags.AutoFinishMutation = val
         if val then
             task.spawn(function()
                 while Flags.AutoFinishMutation do
-                    local plot = getMyPlot()
-                    local incs = plot and plot:FindFirstChild("Incubators")
-                    if incs then
-                        for i = 1, 5 do
-                            local inc = incs:FindFirstChild("Incubator" .. i)
-                            if inc and (inc:GetAttribute("Ready") == true or inc:GetAttribute("HasJob") == true) then
-                                Net.Fire("FinishMutation", i)
-                                local mName = inc:GetAttribute("MutantName") or "Мутант"
-                                SessionStats.MutantsClaimed = SessionStats.MutantsClaimed + 1
-                                SessionStats.LastMutant = tostring(mName)
-
-                                if Flags.WebhookMutant then
-                                    local pName = Flags.StreamerMode and "[Скрыто на демке]" or (LocalPlayer.Name .. " (" .. LocalPlayer.DisplayName .. ")")
-                                    local curCash = getPlayerCash()
-                                    local curSpeed = getPlayerSpeed()
-                                    local uptime = formatDuration(os.time() - SessionStats.StartTime)
-
-                                    sendDiscordWebhook(
-                                        "🔬 Мутант выведен и собран!",
-                                        "Инкубатор завершил скрещивание, новый мутант добавлен на базу!",
-                                        10181046,
-                                        {
-                                            { name = "🧬 Мутант", value = tostring(mName), inline = true },
-                                            { name = "📦 Слот инкубатора", value = "Слот #" .. tostring(i), inline = true },
-                                            { name = "🏆 Собрано мутантов", value = tostring(SessionStats.MutantsClaimed) .. " шт.", inline = true },
-
-                                            { name = "💰 Баланс ($)", value = "$" .. curCash, inline = true },
-                                            { name = "🏃 Текущая скорость", value = curSpeed .. " ⚡", inline = true },
-                                            { name = "⏱️ Время сессии", value = uptime, inline = true },
-
-                                            { name = "👤 Игрок", value = pName, inline = true },
-                                            { name = "🏡 Участок", value = "Plot #" .. tostring(LocalPlayer:GetAttribute("Plot") or "?"), inline = true },
-                                        }
-                                    )
-                                end
-
-                                if Flags.AutoFuse then
-                                    task.spawn(fuseAvailableDna)
-                                end
-                            end
-                        end
-                    end
-                    task.wait(2)
+                    claimAllReadyMutants()
+                    task.wait(2.5)
                 end
             end)
         end
@@ -1115,15 +1210,12 @@ Tabs.Base:Toggle({
 })
 
 Tabs.Base:Button({
-    Title = "Забрать готовых мутантов (Claim All)",
-    Desc = "Проверяет все 5 слотов инкубатора и завершает созревание",
+    Title = "Забрать готовых мутантов сейчас",
+    Desc = "Персонаж подходит к готовым фюз-машинам и забирает всех созревших мутантов",
     Callback = function()
-        for i = 1, 5 do
-            Net.Fire("FinishMutation", i)
-        end
-        WindUI:Notify({ Title = "Мутатор", Content = "Запрос на завершение мутаций отправлен!", Duration = 3 })
-        if Flags.AutoFuse then
-            task.delay(0.5, fuseAvailableDna)
+        local count = claimAllReadyMutants()
+        if count == 0 then
+            WindUI:Notify({ Title = "Мутатор", Content = "Нет готовых мутантов для сбора.", Duration = 2.5 })
         end
     end
 })
