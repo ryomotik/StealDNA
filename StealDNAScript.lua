@@ -124,7 +124,9 @@ local Flags = {
     WebhookPeriodic = false,
     PeriodicInterval = 10,
     PatrolFarm = false,
-    PatrolOnlySpeed = true,
+    PatrolOnlySpeed = false,
+    PatrolDirection = "TopDown",
+    PatrolPriority = "BestFirst",
     PatrolWaitTime = 0.8,
     PatrolFlyMode = "Teleport",
 }
@@ -165,7 +167,14 @@ end
 
 local function getPlayerSpeed()
     local sp = LocalPlayer:GetAttribute("Speed")
+        or LocalPlayer:GetAttribute("PlayerSpeed")
+        or LocalPlayer:GetAttribute("RunSpeed")
     if sp ~= nil then return tostring(sp) end
+    local ls = LocalPlayer:FindFirstChild("leaderstats")
+    if ls then
+        local s = ls:FindFirstChild("Speed") or ls:FindFirstChild("SpeedLevel")
+        if s and s.Value ~= nil then return tostring(s.Value) end
+    end
     if Character and Character:FindFirstChildOfClass("Humanoid") then
         return tostring(math.floor(Character.Humanoid.WalkSpeed))
     end
@@ -427,7 +436,11 @@ local function stealAnimalModel(animal)
         task.wait(0.15)
     end
 
-    if HRP and hrpTarget then
+    local promptWorldPos = promptAt and (promptAt:IsA("Attachment") and promptAt.WorldPosition or promptAt.Position)
+    if promptWorldPos and HRP then
+        HRP.CFrame = CFrame.new(promptWorldPos + Vector3.new(0, 1, 0))
+        task.wait(0.2)
+    elseif HRP and hrpTarget then
         HRP.CFrame = hrpTarget.CFrame * CFrame.new(0, 0, 3)
         task.wait(0.2)
     end
@@ -547,11 +560,23 @@ local function runPatrolFarmStep()
     local animalsFolder = workspace:FindFirstChild("Animals")
     if not animalsFolder then return end
 
-    for _, biome in ipairs(biomes) do
+    -- Формируем список биомов в соответствии с выбранным направлением
+    local biomeList = {}
+    if Flags.PatrolDirection == "TopDown" then
+        for i = #biomes, 1, -1 do
+            table.insert(biomeList, biomes[i])
+        end
+    else
+        for i = 1, #biomes do
+            table.insert(biomeList, biomes[i])
+        end
+    end
+
+    for _, biome in ipairs(biomeList) do
         if not Flags.PatrolFarm then break end
 
         local biomeZ = biome.Z
-        local mySpeed = tonumber(LocalPlayer:GetAttribute("Speed")) or tonumber(getPlayerSpeed()) or 0
+        local mySpeed = tonumber(getPlayerSpeed()) or 0
 
         -- Если включен фильтр по скорости и требуемая скорость биома намного выше нашей, пропускаем
         if Flags.PatrolOnlySpeed and biome.MinSpeed > (mySpeed + 50) and biome.MinSpeed > 100 then
@@ -582,7 +607,7 @@ local function runPatrolFarmStep()
         requestStreamChunk(Vector3.new(0, 5, biomeZ))
         task.wait(Flags.PatrolWaitTime)
 
-        -- Поиск кандидатов в данном биоме
+        -- Поиск кандидатов в данном биоме (расширенный радиус до 400 studs для больших зон)
         local candidates = {}
         for _, animal in ipairs(animalsFolder:GetChildren()) do
             local aId = animal:GetAttribute("AnimalId")
@@ -591,7 +616,7 @@ local function runPatrolFarmStep()
 
             if aId and aState == "Sleep" and hrpTarget then
                 local zDist = math.abs(hrpTarget.Position.Z - biomeZ)
-                if zDist < 250 then
+                if zDist < 400 then
                     local reqSpeed = (Config.Animals and Config.Animals[aId] and Config.Animals[aId].Speed) or 0
                     if not Flags.PatrolOnlySpeed or mySpeed >= reqSpeed then
                         table.insert(candidates, animal)
@@ -600,8 +625,27 @@ local function runPatrolFarmStep()
             end
         end
 
-        -- Сбор ДНК у всех найденных спящих животных
-        for _, animal in ipairs(candidates) do
+        -- Сортируем кандидатов: ЛУЧШИЕ / ТОПОВЫЕ ЖИВОТНЫЕ (по требуемой скорости) ИДУТ ПЕРВЫМИ!
+        table.sort(candidates, function(a, b)
+            local aId = a:GetAttribute("AnimalId")
+            local bId = b:GetAttribute("AnimalId")
+            local sa = (Config.Animals and Config.Animals[aId] and Config.Animals[aId].Speed) or 0
+            local sb = (Config.Animals and Config.Animals[bId] and Config.Animals[bId].Speed) or 0
+            return sa > sb
+        end)
+
+        -- Ограничение количества целей в биоме при режиме "Только топ"
+        local targetsToSteal = {}
+        if Flags.PatrolPriority == "OnlyTop" then
+            for i = 1, math.min(#candidates, 2) do
+                table.insert(targetsToSteal, candidates[i])
+            end
+        else
+            targetsToSteal = candidates
+        end
+
+        -- Сбор ДНК у отобранных животных (от лучших к простым)
+        for _, animal in ipairs(targetsToSteal) do
             if not Flags.PatrolFarm then break end
             if animal and animal:GetAttribute("State") == "Sleep" then
                 stealAnimalModel(animal)
@@ -626,7 +670,7 @@ Tabs.Farm:Section({ Title = "🌍 Авто-облёт локаций (Решен
 
 Tabs.Farm:Toggle({
     Title = "Авто-облёт всех биомов (Patrol)",
-    Desc = "Последовательно облетает все локации карты, прогружает чанки и ворует ДНК у всех доступных спящих животных",
+    Desc = "Последовательно облетает локации карты, прогружает чанки и ворует ДНК у всех доступных спящих животных",
     Value = false,
     Callback = function(val)
         Flags.PatrolFarm = val
@@ -641,10 +685,36 @@ Tabs.Farm:Toggle({
     end
 })
 
+Tabs.Farm:Dropdown({
+    Title = "Направление облёта биомов",
+    Desc = "Рекомендуется 'От лучших (Радуга ➔ Лес)', чтобы сразу лутать топовую ДНК",
+    Values = { "От лучших к начальным (Радуга ➔ Лес)", "От начальных к лучшим (Лес ➔ Радуга)" },
+    Value = "От лучших к начальным (Радуга ➔ Лес)",
+    Callback = function(sel)
+        Flags.PatrolDirection = (sel == "От лучших к начальным (Радуга ➔ Лес)") and "TopDown" or "Normal"
+    end
+})
+
+Tabs.Farm:Dropdown({
+    Title = "Приоритет животных в биоме",
+    Desc = "Определяет, каких животных в локации воровать в первую очередь",
+    Values = { "Топ-редкие первыми (От лучших к слабым)", "Только ТОП-1/ТОП-2 в биоме (Быстрый фарм)", "Все подряд" },
+    Value = "Топ-редкие первыми (От лучших к слабым)",
+    Callback = function(sel)
+        if sel == "Только ТОП-1/ТОП-2 в биоме (Быстрый фарм)" then
+            Flags.PatrolPriority = "OnlyTop"
+        elseif sel == "Все подряд" then
+            Flags.PatrolPriority = "All"
+        else
+            Flags.PatrolPriority = "BestFirst"
+        end
+    end
+})
+
 Tabs.Farm:Toggle({
-    Title = "Только доступные по скорости",
-    Desc = "Собирает ДНК только у тех животных, для которых хватает скорости персонажа",
-    Value = true,
+    Title = "Ограничивать по скорости",
+    Desc = "ВЫКЛЮЧИТЕ, чтобы лутать абсолютно ВСЕХ топовых животных (авто-побег спасает от поимки)",
+    Value = false,
     Callback = function(val)
         Flags.PatrolOnlySpeed = val
     end
