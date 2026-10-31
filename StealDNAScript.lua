@@ -28,6 +28,27 @@ end)
 local Net = require(ReplicatedStorage.Shared.Net)
 local Config = require(ReplicatedStorage.Shared.Config)
 
+local State
+pcall(function()
+    State = require(ReplicatedStorage.Client.State)
+end)
+
+local function getDnaInventory()
+    if State and State.Data and State.Data.DNA then
+        return State.Data.DNA
+    end
+    local s, data = pcall(function()
+        return Net.Invoke("GetState")
+    end)
+    if s and data and data.DNA then
+        if State and State.Data then
+            State.Data.DNA = data.DNA
+        end
+        return data.DNA
+    end
+    return {}
+end
+
 -- Универсальная функция HTTP-запросов (поддержка всех экзекуторов)
 local function getRequestFunc()
     return (type(request) == "function" and request)
@@ -110,6 +131,9 @@ local Flags = {
     AutoSafeEscape = true,
     StealDelay = 2,
     AutoFinishMutation = false,
+    AutoFuse = false,
+    FuseStrategy = "Best",
+    FuseDelay = 2,
     AutoUpgradePlot = false,
     AutoUpgradeMutator = false,
     ESPEnabled = false,
@@ -121,6 +145,7 @@ local Flags = {
     WebhookURL = "",
     WebhookSteal = true,
     WebhookMutant = true,
+    WebhookFuse = true,
     WebhookPeriodic = false,
     PeriodicInterval = 10,
     PatrolFarm = false,
@@ -138,6 +163,7 @@ local SessionStats = {
     StartTime = os.time(),
     DnaStolen = 0,
     MutantsClaimed = 0,
+    FusionsStarted = 0,
     LastDnaAnimal = "Не было",
     LastMutant = "Не было",
 }
@@ -249,12 +275,12 @@ local function sendSessionReportWebhook()
         or "ВЫКЛ ❌"
 
     local botsSummary = string.format(
-        "• Тренировка: %s\n• Супер-клик (5x): %s\n• Авто-фарм локаций: %s\n• Точечная авто-кража: %s\n• Авто-мутатор: %s",
+        "• Тренировка: %s\n• Супер-клик (5x): %s\n• Авто-фарм локаций: %s\n• Авто-сбор мутантов: %s\n• Авто-слияние ДНК: %s",
         Flags.AutoTrain and "ВКЛ ✅" or "ВЫКЛ ❌",
         Flags.FastClick and "ВКЛ ✅" or "ВЫКЛ ❌",
         farmStatus,
-        Flags.AutoSteal and ("ВКЛ ✅ (" .. tostring(Flags.SelectedAnimal) .. ")") or "ВЫКЛ ❌",
-        Flags.AutoFinishMutation and "ВКЛ ✅" or "ВЫКЛ ❌"
+        Flags.AutoFinishMutation and "ВКЛ ✅" or "ВЫКЛ ❌",
+        Flags.AutoFuse and ("ВКЛ ✅ (" .. tostring(Flags.FuseStrategy) .. ")") or "ВЫКЛ ❌"
     )
 
     sendDiscordWebhook(
@@ -853,6 +879,121 @@ Tabs.Farm:Toggle({
 
 Tabs.Base:Section({ Title = "Инкубатор и Мутации" })
 
+-- Логика слияния ДНК в свободных слотах инкубатора
+local function fuseAvailableDna()
+    local plot = getMyPlot()
+    local incs = plot and plot:FindFirstChild("Incubators")
+    if not incs then return end
+
+    -- Поиск свободных слотов инкубатора (от 1 до 5)
+    local freeSlots = {}
+    for i = 1, 5 do
+        local inc = incs:FindFirstChild("Incubator" .. i)
+        if inc then
+            local hasJob = inc:GetAttribute("HasJob")
+            local isReady = inc:GetAttribute("Ready")
+            if not hasJob and not isReady then
+                table.insert(freeSlots, i)
+            end
+        end
+    end
+
+    if #freeSlots == 0 then return end
+
+    local dnaInv = getDnaInventory()
+    local availableDna = {}
+    for animalId, count in pairs(dnaInv) do
+        local n = tonumber(count) or 0
+        if n > 0 then
+            availableDna[animalId] = n
+        end
+    end
+
+    for _, slotIndex in ipairs(freeSlots) do
+        local pairA, pairB = nil, nil
+
+        if Flags.FuseStrategy == "Same" then
+            for animalId, count in pairs(availableDna) do
+                if count >= 2 then
+                    pairA = animalId
+                    pairB = animalId
+                    break
+                end
+            end
+        elseif Flags.FuseStrategy == "Best" then
+            local sorted = {}
+            for animalId, count in pairs(availableDna) do
+                if count > 0 then
+                    table.insert(sorted, animalId)
+                end
+            end
+            table.sort(sorted, function(a, b)
+                local sa = (Config.Animals and Config.Animals[a] and Config.Animals[a].Speed) or 0
+                local sb = (Config.Animals and Config.Animals[b] and Config.Animals[b].Speed) or 0
+                return sa > sb
+            end)
+
+            if #sorted >= 1 then
+                pairA = sorted[1]
+                if availableDna[pairA] >= 2 then
+                    pairB = pairA
+                elseif #sorted >= 2 then
+                    pairB = sorted[2]
+                end
+            end
+        else
+            local list = {}
+            for animalId, count in pairs(availableDna) do
+                for _ = 1, math.min(count, 2) do
+                    table.insert(list, animalId)
+                    if #list >= 2 then break end
+                end
+                if #list >= 2 then break end
+            end
+            if #list >= 2 then
+                pairA = list[1]
+                pairB = list[2]
+            end
+        end
+
+        if pairA and pairB then
+            local success, res = pcall(function()
+                return Net.Invoke("Fuse", slotIndex, pairA, pairB)
+            end)
+
+            if success and res then
+                availableDna[pairA] = availableDna[pairA] - 1
+                availableDna[pairB] = availableDna[pairB] - 1
+                SessionStats.FusionsStarted = SessionStats.FusionsStarted + 1
+                SessionStats.LastFusion = tostring(pairA) .. " + " .. tostring(pairB)
+
+                WindUI:Notify({
+                    Title = "Слияние ДНК запущено!",
+                    Content = string.format("Слот #%d: %s + %s", slotIndex, pairA, pairB),
+                    Duration = 3
+                })
+
+                if Flags.WebhookFuse then
+                    local pName = Flags.StreamerMode and "[Скрыто на демке]" or (LocalPlayer.Name .. " (" .. LocalPlayer.DisplayName .. ")")
+                    sendDiscordWebhook(
+                        "🧪 Запущено слияние ДНК!",
+                        "В инкубаторе успешно началось выведение нового мутанта.",
+                        11027200,
+                        {
+                            { name = "🧬 ДНК 1", value = tostring(pairA), inline = true },
+                            { name = "🧬 ДНК 2", value = tostring(pairB), inline = true },
+                            { name = "📦 Слот инкубатора", value = "Слот #" .. tostring(slotIndex), inline = true },
+                            { name = "👤 Игрок", value = pName, inline = true },
+                            { name = "🏡 Участок", value = "Plot #" .. tostring(LocalPlayer:GetAttribute("Plot") or "?"), inline = true },
+                        }
+                    )
+                end
+                task.wait(0.3)
+            end
+        end
+    end
+end
+
 Tabs.Base:Toggle({
     Title = "Авто-сбор готовых мутантов",
     Desc = "Автоматически забирает созданных мутантов из инкубаторов базы",
@@ -897,6 +1038,10 @@ Tabs.Base:Toggle({
                                         }
                                     )
                                 end
+
+                                if Flags.AutoFuse then
+                                    task.spawn(fuseAvailableDna)
+                                end
                             end
                         end
                     end
@@ -915,6 +1060,61 @@ Tabs.Base:Button({
             Net.Fire("FinishMutation", i)
         end
         WindUI:Notify({ Title = "Мутатор", Content = "Запрос на завершение мутаций отправлен!", Duration = 3 })
+        if Flags.AutoFuse then
+            task.delay(0.5, fuseAvailableDna)
+        end
+    end
+})
+
+Tabs.Base:Section({ Title = "🧬 Авто-слияние ДНК (Auto Fuse)" })
+
+Tabs.Base:Toggle({
+    Title = "Авто-слияние ДНК (Auto Fuse)",
+    Desc = "Автоматически объединяет имеющиеся образцы ДНК в свободных слотах инкубатора",
+    Value = false,
+    Callback = function(val)
+        Flags.AutoFuse = val
+        if val then
+            task.spawn(function()
+                while Flags.AutoFuse do
+                    fuseAvailableDna()
+                    task.wait(Flags.FuseDelay)
+                end
+            end)
+        end
+    end
+})
+
+Tabs.Base:Dropdown({
+    Title = "Стратегия слияния ДНК",
+    Desc = "Какие образцы ДНК спаривать в первую очередь",
+    Values = { "Топ-редкие первыми (Лучшие ДНК)", "Одинаковые ДНК (A + A)", "Любые доступные ДНК" },
+    Value = "Топ-редкие первыми (Лучшие ДНК)",
+    Callback = function(sel)
+        if sel == "Одинаковые ДНК (A + A)" then
+            Flags.FuseStrategy = "Same"
+        elseif sel == "Любые доступные ДНК" then
+            Flags.FuseStrategy = "Any"
+        else
+            Flags.FuseStrategy = "Best"
+        end
+    end
+})
+
+Tabs.Base:Slider({
+    Title = "Задержка проверки инкубатора (сек)",
+    Value = { Min = 1, Max = 10, Default = 2 },
+    Step = 0.5,
+    Callback = function(val)
+        Flags.FuseDelay = val
+    end
+})
+
+Tabs.Base:Button({
+    Title = "🧪 Скрестить доступные ДНК сейчас (Fuse All)",
+    Desc = "Мгновенно заполняет все свободные слоты инкубатора лучшими парами ДНК",
+    Callback = function()
+        fuseAvailableDna()
     end
 })
 
@@ -1047,6 +1247,15 @@ Tabs.Discord:Toggle({
     Value = true,
     Callback = function(val)
         Flags.WebhookMutant = val
+    end
+})
+
+Tabs.Discord:Toggle({
+    Title = "Оповещать при слиянии ДНК",
+    Desc = "Шлет сообщение в Discord каждый раз при запуске слияния в инкубаторе",
+    Value = true,
+    Callback = function(val)
+        Flags.WebhookFuse = val
     end
 })
 
@@ -1327,6 +1536,7 @@ _G.StealDNAScriptUnload = function()
     Flags.AutoSteal = false
     Flags.PatrolFarm = false
     Flags.AutoFinishMutation = false
+    Flags.AutoFuse = false
     Flags.AutoUpgradePlot = false
     Flags.AutoUpgradeMutator = false
     Flags.ESPEnabled = false
