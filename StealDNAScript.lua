@@ -111,6 +111,68 @@ local Window = WindUI:CreateWindow({
     }
 })
 
+-- Настройки горячих клавиш меню
+local menuToggleKey = Enum.KeyCode.RightControl
+local lastToggleTick = 0
+local originalToggle = Window.Toggle
+
+local function safeToggleWindow()
+    local now = tick()
+    if now - lastToggleTick < 0.25 then return end
+    lastToggleTick = now
+    if originalToggle then
+        pcall(function()
+            originalToggle(Window)
+        end)
+    else
+        pcall(function()
+            Window:Toggle()
+        end)
+    end
+end
+
+if Window and originalToggle then
+    Window.Toggle = function(self, ...)
+        local now = tick()
+        if now - lastToggleTick < 0.25 then return end
+        lastToggleTick = now
+        return originalToggle(self or Window, ...)
+    end
+end
+
+local function setMenuToggleKey(key)
+    local targetKey = nil
+    if typeof(key) == "EnumItem" then
+        targetKey = key
+    elseif type(key) == "string" then
+        targetKey = Enum.KeyCode[key]
+    elseif type(key) == "table" then
+        if key.KeyCode and typeof(key.KeyCode) == "EnumItem" then
+            targetKey = key.KeyCode
+        elseif key.Key and typeof(key.Key) == "EnumItem" then
+            targetKey = key.Key
+        elseif key.Name and Enum.KeyCode[key.Name] then
+            targetKey = Enum.KeyCode[key.Name]
+        end
+    end
+
+    if targetKey then
+        menuToggleKey = targetKey
+        pcall(function()
+            if Window.SetToggleKey then
+                Window:SetToggleKey(targetKey)
+            elseif Window.ToggleKey ~= nil then
+                Window.ToggleKey = targetKey
+            end
+        end)
+        WindUI:Notify({
+            Title = "Горячая клавиша меню",
+            Content = "Бинд меню изменен на: " .. targetKey.Name,
+            Duration = 3
+        })
+    end
+end
+
 -- Вкладки
 local Tabs = {
     Farm = Window:Tab({ Title = "Фарм и Кража", Icon = "flame" }),
@@ -1453,11 +1515,90 @@ Tabs.Player:Toggle({
     end
 })
 
+Tabs.Player:Section({ Title = "⌨️ Горячие клавиши (Бинд меню)" })
+
+-- Интерактивный кейбинд (нажмите и нажмите любую кнопку на клавиатуре)
+pcall(function()
+    Tabs.Player:Keybind({
+        Title = "Бинд открытия / закрытия меню",
+        Desc = "Нажмите на кнопку и нажмите любую клавишу для назначения бинда",
+        Value = "RightControl",
+        Callback = function(key)
+            setMenuToggleKey(key)
+        end
+    })
+end)
+
+-- Быстрый выпадающий список популярных клавиш
+Tabs.Player:Dropdown({
+    Title = "Быстрый выбор клавиши меню",
+    Desc = "Выберите клавишу из списка (RightControl, Insert, F1-F5 и др.)",
+    Values = {
+        "RightControl",
+        "Insert",
+        "RightShift",
+        "LeftControl",
+        "LeftAlt",
+        "F1",
+        "F2",
+        "F3",
+        "F4",
+        "F5",
+        "Tab",
+        "Home",
+        "End",
+        "CapsLock",
+        "Q",
+        "E",
+        "X",
+        "Z",
+        "V",
+        "B",
+        "C",
+        "G",
+        "H",
+        "M",
+        "N",
+        "P",
+        "R",
+        "T",
+        "Y"
+    },
+    Value = "RightControl",
+    Callback = function(val)
+        setMenuToggleKey(val)
+    end
+})
+
 Tabs.Player:Button({
     Title = "Скрыть / Показать меню хаба",
-    Desc = "Также можно нажимать горячую клавишу RightControl или Insert",
+    Desc = "Кликните для сворачивания / разворачивания окна хаба",
     Callback = function()
-        Window:Toggle()
+        safeToggleWindow()
+    end
+})
+
+Tabs.Player:Toggle({
+    Title = "Плавающая кнопка на экране (OpenButton)",
+    Desc = "Показывает круглую кнопку на экране для быстрого открытия меню",
+    Value = true,
+    Callback = function(val)
+        pcall(function()
+            if Window.OpenButtonInstance then
+                Window.OpenButtonInstance.Visible = val
+            end
+        end)
+        pcall(function()
+            local CoreGui = game:GetService("CoreGui")
+            local gui = CoreGui:FindFirstChild("WindUI") or LocalPlayer:FindFirstChild("PlayerGui"):FindFirstChild("WindUI")
+            if gui then
+                for _, obj in ipairs(gui:GetDescendants()) do
+                    if obj:IsA("GuiObject") and (obj.Name == "OpenButton" or (obj:FindFirstChild("Title") and obj.Title:IsA("TextLabel") and obj.Title.Text == "Steal DNA")) then
+                        obj.Visible = val
+                    end
+                end
+            end
+        end)
     end
 })
 
@@ -1520,10 +1661,13 @@ RunService.Stepped:Connect(function()
     end
 end)
 
--- Горячая клавиша Insert для открытия/закрытия
-UserInputService.InputBegan:Connect(function(input, processed)
-    if not processed and input.KeyCode == Enum.KeyCode.Insert then
-        Window:Toggle()
+-- Обработка горячих клавиш открытия/закрытия меню
+local menuToggleConn = UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        if input.KeyCode == menuToggleKey or input.KeyCode == Enum.KeyCode.Insert then
+            safeToggleWindow()
+        end
     end
 end)
 
@@ -1544,6 +1688,10 @@ _G.StealDNAScriptUnload = function()
     Flags.WebhookPeriodic = false
     if Character and Character:FindFirstChildOfClass("Humanoid") then
         Character.Humanoid.DisplayName = LocalPlayer.DisplayName
+    end
+    if menuToggleConn then
+        pcall(function() menuToggleConn:Disconnect() end)
+        menuToggleConn = nil
     end
     clearESP()
     espFolder:Destroy()
