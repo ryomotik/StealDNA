@@ -121,10 +121,68 @@ local Flags = {
     WebhookURL = "",
     WebhookSteal = true,
     WebhookMutant = true,
+    WebhookPeriodic = false,
+    PeriodicInterval = 10,
 }
 
+-- Статистика текущей игровой сессии
+local SessionStats = {
+    StartTime = os.time(),
+    DnaStolen = 0,
+    MutantsClaimed = 0,
+    LastDnaAnimal = "Не было",
+    LastMutant = "Не было",
+}
+
+-- Вспомогательные функции для форматирования и сбора данных
+local function formatDuration(sec)
+    local h = math.floor(sec / 3600)
+    local m = math.floor((sec % 3600) / 60)
+    local s = math.floor(sec % 60)
+    if h > 0 then
+        return string.format("%dч %dм %dс", h, m, s)
+    elseif m > 0 then
+        return string.format("%dм %dс", m, s)
+    else
+        return string.format("%dс", s)
+    end
+end
+
+local function getPlayerCash()
+    local attr = LocalPlayer:GetAttribute("Cash") or LocalPlayer:GetAttribute("Money") or LocalPlayer:GetAttribute("Coins")
+    if attr ~= nil then return tostring(attr) end
+    local ls = LocalPlayer:FindFirstChild("leaderstats")
+    if ls then
+        local c = ls:FindFirstChild("Cash") or ls:FindFirstChild("Money") or ls:FindFirstChild("Coins")
+        if c and c.Value ~= nil then return tostring(c.Value) end
+    end
+    return "N/A"
+end
+
+local function getPlayerSpeed()
+    local sp = LocalPlayer:GetAttribute("Speed")
+    if sp ~= nil then return tostring(sp) end
+    if Character and Character:FindFirstChildOfClass("Humanoid") then
+        return tostring(math.floor(Character.Humanoid.WalkSpeed))
+    end
+    return "0"
+end
+
+local function getPing()
+    local ok, ping = pcall(function()
+        local s = game:GetService("Stats")
+        local item = s and s:FindFirstChild("Network") and s.Network:FindFirstChild("ServerStatsItem")
+        local dp = item and item:FindFirstChild("Data Ping")
+        return dp and dp:GetValueString()
+    end)
+    if ok and ping then
+        return ping
+    end
+    return "N/A"
+end
+
 -- Функция отправки сообщений в Discord Webhook
-local function sendDiscordWebhook(title, description, color, fields)
+local function sendDiscordWebhook(title, description, color, fields, thumbnail)
     if not Flags.WebhookURL or Flags.WebhookURL == "" then return end
     local req = getRequestFunc()
     if not req then return end
@@ -134,9 +192,16 @@ local function sendDiscordWebhook(title, description, color, fields)
         description = description,
         color = color or 5814783,
         fields = fields or {},
-        footer = { text = "Steal DNA Hub • by ryomotik" },
+        footer = { 
+            text = "Steal DNA Hub v2.1 • by ryomotik",
+            icon_url = "https://i.imgur.com/83pA8y7.png"
+        },
         timestamp = DateTime.now():ToIsoDate()
     }
+
+    if thumbnail then
+        embed.thumbnail = { url = thumbnail }
+    end
 
     local payload = HttpService:JSONEncode({
         username = "Steal DNA Hub",
@@ -154,6 +219,45 @@ local function sendDiscordWebhook(title, description, color, fields)
             })
         end)
     end)
+end
+
+-- Отправка расширенной сводки сессии в Discord
+local function sendSessionReportWebhook()
+    local pName = Flags.StreamerMode and "[Скрыто на демке]" or (LocalPlayer.Name .. " (" .. LocalPlayer.DisplayName .. ")")
+    local curSpeed = getPlayerSpeed()
+    local curCash = getPlayerCash()
+    local uptime = formatDuration(os.time() - SessionStats.StartTime)
+    local ping = getPing()
+
+    local botsSummary = string.format(
+        "• Тренировка: %s\n• Супер-клик (5x): %s\n• Авто-кража: %s\n• Авто-мутатор: %s",
+        Flags.AutoTrain and "ВКЛ ✅" or "ВЫКЛ ❌",
+        Flags.FastClick and "ВКЛ ✅" or "ВЫКЛ ❌",
+        Flags.AutoSteal and ("ВКЛ ✅ (" .. tostring(Flags.SelectedAnimal) .. ")") or "ВЫКЛ ❌",
+        Flags.AutoFinishMutation and "ВКЛ ✅" or "ВЫКЛ ❌"
+    )
+
+    sendDiscordWebhook(
+        "📈 Сводка сессии • Steal DNA Hub",
+        "Подробный аналитический отчет об игровой сессии и текущем прогрессе фарминга.",
+        43263,
+        {
+            { name = "👤 Игрок", value = pName, inline = true },
+            { name = "⏱️ Время сессии", value = uptime, inline = true },
+            { name = "🏡 Участок (Plot)", value = "Plot #" .. tostring(LocalPlayer:GetAttribute("Plot") or "?"), inline = true },
+
+            { name = "🏃 Текущая скорость", value = curSpeed .. " ⚡", inline = true },
+            { name = "💰 Баланс", value = "$" .. curCash .. " 💵", inline = true },
+            { name = "📡 Пинг сервера", value = ping, inline = true },
+
+            { name = "🧬 Украдено ДНК", value = tostring(SessionStats.DnaStolen) .. " шт.\n(Посл: " .. SessionStats.LastDnaAnimal .. ")", inline = true },
+            { name = "🔬 Мутантов получено", value = tostring(SessionStats.MutantsClaimed) .. " шт.\n(Посл: " .. SessionStats.LastMutant .. ")", inline = true },
+            { name = "🛡️ Режим демки", value = Flags.StreamerMode and "АКТИВЕН 🔒" or "ВЫКЛЮЧЕН 🔓", inline = true },
+
+            { name = "⚙️ Состояние автоматизации", value = botsSummary, inline = false },
+        },
+        "https://i.imgur.com/83pA8y7.png"
+    )
 end
 
 -- Хелперы игры
@@ -347,17 +451,34 @@ local function stealDnaOnce(targetAnimalId)
         Duration = 3
     })
 
+    SessionStats.DnaStolen = SessionStats.DnaStolen + 1
+    SessionStats.LastDnaAnimal = tostring(targetAnimalId)
+
     if Flags.WebhookSteal then
-        local speedVal = tostring(LocalPlayer:GetAttribute("Speed") or "0")
-        local playerName = Flags.StreamerMode and "[Скрыто на демке]" or LocalPlayer.Name
+        local pName = Flags.StreamerMode and "[Скрыто на демке]" or (LocalPlayer.Name .. " (" .. LocalPlayer.DisplayName .. ")")
+        local curSpeed = tonumber(LocalPlayer:GetAttribute("Speed")) or tonumber(getPlayerSpeed()) or 0
+        local reqSpeed = (Config.Animals and Config.Animals[targetAnimalId] and Config.Animals[targetAnimalId].Speed) or 0
+        local diff = curSpeed - reqSpeed
+        local diffStr = diff >= 0 and ("+" .. diff .. " запас ✅") or (diff .. " нехватка ⚠️")
+        local curCash = getPlayerCash()
+        local uptime = formatDuration(os.time() - SessionStats.StartTime)
+
         sendDiscordWebhook(
-            "🧬 Успешная кража ДНК!",
-            "Игрок успешно украл ДНК и ушел в безопасную зону.",
-            65280,
+            "🧬 Успешная кража ДНК: " .. tostring(targetAnimalId),
+            "Игрок успешно украл ДНК и ушел в безопасную зону за SafeLine!",
+            65416,
             {
-                { name = "Зверь", value = tostring(targetAnimalId), inline = true },
-                { name = "Скорость", value = speedVal, inline = true },
-                { name = "Игрок", value = playerName, inline = true }
+                { name = "🐾 Добыча", value = tostring(targetAnimalId), inline = true },
+                { name = "⚡ Требуемая скорость", value = tostring(reqSpeed), inline = true },
+                { name = "🏃 Скорость игрока", value = tostring(curSpeed) .. " (" .. diffStr .. ")", inline = true },
+
+                { name = "💰 Баланс", value = "$" .. curCash, inline = true },
+                { name = "🏡 База", value = "Plot #" .. tostring(LocalPlayer:GetAttribute("Plot") or "?"), inline = true },
+                { name = "🛡️ Уход за SafeLine", value = Flags.AutoSafeEscape and "Мгновенный ✅" or "Ручной ⚠️", inline = true },
+
+                { name = "📊 Всего за сессию", value = tostring(SessionStats.DnaStolen) .. " ДНК", inline = true },
+                { name = "⏱️ Время в игре", value = uptime, inline = true },
+                { name = "👤 Игрок", value = pName, inline = true },
             }
         )
     end
@@ -430,17 +551,31 @@ Tabs.Base:Toggle({
                             local inc = incs:FindFirstChild("Incubator" .. i)
                             if inc and (inc:GetAttribute("Ready") == true or inc:GetAttribute("HasJob") == true) then
                                 Net.Fire("FinishMutation", i)
+                                local mName = inc:GetAttribute("MutantName") or "Мутант"
+                                SessionStats.MutantsClaimed = SessionStats.MutantsClaimed + 1
+                                SessionStats.LastMutant = tostring(mName)
+
                                 if Flags.WebhookMutant then
-                                    local mName = inc:GetAttribute("MutantName") or "Мутант"
-                                    local pName = Flags.StreamerMode and "[Скрыто]" or LocalPlayer.Name
+                                    local pName = Flags.StreamerMode and "[Скрыто на демке]" or (LocalPlayer.Name .. " (" .. LocalPlayer.DisplayName .. ")")
+                                    local curCash = getPlayerCash()
+                                    local curSpeed = getPlayerSpeed()
+                                    local uptime = formatDuration(os.time() - SessionStats.StartTime)
+
                                     sendDiscordWebhook(
-                                        "🔬 Мутант созрел и собран!",
-                                        "Забрали мутанта из инкубатора #" .. i,
-                                        16753920,
+                                        "🔬 Мутант выведен и собран!",
+                                        "Инкубатор завершил скрещивание, новый мутант добавлен на базу!",
+                                        10181046,
                                         {
-                                            { name = "Мутант", value = tostring(mName), inline = true },
-                                            { name = "Слот", value = "#" .. i, inline = true },
-                                            { name = "Игрок", value = pName, inline = true }
+                                            { name = "🧬 Мутант", value = tostring(mName), inline = true },
+                                            { name = "📦 Слот инкубатора", value = "Слот #" .. tostring(i), inline = true },
+                                            { name = "🏆 Собрано мутантов", value = tostring(SessionStats.MutantsClaimed) .. " шт.", inline = true },
+
+                                            { name = "💰 Баланс ($)", value = "$" .. curCash, inline = true },
+                                            { name = "🏃 Текущая скорость", value = curSpeed .. " ⚡", inline = true },
+                                            { name = "⏱️ Время сессии", value = uptime, inline = true },
+
+                                            { name = "👤 Игрок", value = pName, inline = true },
+                                            { name = "🏡 Участок", value = "Plot #" .. tostring(LocalPlayer:GetAttribute("Plot") or "?"), inline = true },
                                         }
                                     )
                                 end
@@ -536,25 +671,44 @@ Tabs.Discord:Input({
 })
 
 Tabs.Discord:Button({
-    Title = "🔔 Отправить тестовое сообщение",
-    Desc = "Проверяет корректность вебхука и шлет тестовый эмбед в Discord",
+    Title = "🔔 Отправить тестовое сообщение (Инфо-тест)",
+    Desc = "Проверяет корректность вебхука и высылает подробную карточку профиля",
     Callback = function()
         if not Flags.WebhookURL or Flags.WebhookURL == "" then
             WindUI:Notify({ Title = "Ошибка", Content = "Сначала вставьте URL вебхука!", Duration = 3 })
             return
         end
-        local pName = Flags.StreamerMode and "[Скрыто на демке]" or LocalPlayer.Name
+        local pName = Flags.StreamerMode and "[Скрыто на демке]" or (LocalPlayer.Name .. " (" .. LocalPlayer.DisplayName .. ")")
+        local accAge = Flags.StreamerMode and "[Скрыто]" or (tostring(LocalPlayer.AccountAge) .. " дн.")
+        local userId = Flags.StreamerMode and "[Скрыто]" or tostring(LocalPlayer.UserId)
+        local curSpeed = getPlayerSpeed()
+        local curCash = getPlayerCash()
+        local uptime = formatDuration(os.time() - SessionStats.StartTime)
+        local ping = getPing()
+
         sendDiscordWebhook(
-            "🔔 Проверка связи с Discord!",
-            "Вебхук успешно подключен и настроен в Steal DNA Hub!",
-            3447003,
+            "🔔 Проверка связи • Steal DNA Hub",
+            "Вебхук успешно подключен и настроен на передачу расширенной статистики!",
+            5793266,
             {
-                { name = "Статус", value = "Активен ✅", inline = true },
-                { name = "Игрок", value = pName, inline = true },
-                { name = "Автор хаба", value = "ryomotik", inline = true }
+                { name = "👤 Профиль игрока", value = pName, inline = true },
+                { name = "🆔 User ID", value = userId, inline = true },
+                { name = "📅 Возраст аккаунта", value = accAge, inline = true },
+
+                { name = "🏃 Текущая скорость", value = curSpeed .. " ⚡", inline = true },
+                { name = "💰 Баланс ($)", value = "$" .. curCash .. " 💵", inline = true },
+                { name = "🏡 Участок (Plot)", value = "Plot #" .. tostring(LocalPlayer:GetAttribute("Plot") or "?"), inline = true },
+
+                { name = "⏱️ Время сессии", value = uptime, inline = true },
+                { name = "📡 Пинг сервера", value = ping, inline = true },
+                { name = "🛡️ Режим демки", value = Flags.StreamerMode and "АКТИВЕН 🔒" or "ВЫКЛ 🔓", inline = true },
+
+                { name = "👑 Автор хаба", value = "ryomotik", inline = true },
+                { name = "📊 Украдено ДНК", value = tostring(SessionStats.DnaStolen) .. " шт.", inline = true },
+                { name = "🔬 Мутантов получено", value = tostring(SessionStats.MutantsClaimed) .. " шт.", inline = true },
             }
         )
-        WindUI:Notify({ Title = "Discord", Content = "Тестовое сообщение отправлено!", Duration = 3 })
+        WindUI:Notify({ Title = "Discord", Content = "Расширенный тестовый отчет отправлен!", Duration = 3 })
     end
 })
 
@@ -562,7 +716,7 @@ Tabs.Discord:Section({ Title = "Настройки оповещений" })
 
 Tabs.Discord:Toggle({
     Title = "Оповещать при краже ДНК",
-    Desc = "Шлет сообщение в Discord каждый раз при успешном сборе ДНК",
+    Desc = "Шлет подробный отчет (животное, скорость, баланс, статистика)",
     Value = true,
     Callback = function(val)
         Flags.WebhookSteal = val
@@ -571,10 +725,53 @@ Tabs.Discord:Toggle({
 
 Tabs.Discord:Toggle({
     Title = "Оповещать при выведении Мутанта",
-    Desc = "Шлет сообщение в Discord при сборе готового мутанта",
+    Desc = "Шлет подробный отчет при завершении мутации в инкубаторе",
     Value = true,
     Callback = function(val)
         Flags.WebhookMutant = val
+    end
+})
+
+Tabs.Discord:Section({ Title = "Периодические отчеты и Аналитика" })
+
+Tabs.Discord:Button({
+    Title = "📊 Отправить текущую сводку сессии",
+    Desc = "Мгновенно отправляет полный отчет со всеми счетчиками и статусами в Discord",
+    Callback = function()
+        if not Flags.WebhookURL or Flags.WebhookURL == "" then
+            WindUI:Notify({ Title = "Ошибка", Content = "Сначала вставьте URL вебхука!", Duration = 3 })
+            return
+        end
+        sendSessionReportWebhook()
+        WindUI:Notify({ Title = "Discord", Content = "Сводка сессии успешно отправлена!", Duration = 3 })
+    end
+})
+
+Tabs.Discord:Toggle({
+    Title = "Периодический авто-отчет",
+    Desc = "Автоматически отправляет полную сводку сессии в Discord по таймеру",
+    Value = false,
+    Callback = function(val)
+        Flags.WebhookPeriodic = val
+        if val then
+            task.spawn(function()
+                while Flags.WebhookPeriodic do
+                    task.wait(Flags.PeriodicInterval * 60)
+                    if Flags.WebhookPeriodic and Flags.WebhookURL and Flags.WebhookURL ~= "" then
+                        sendSessionReportWebhook()
+                    end
+                end
+            end)
+        end
+    end
+})
+
+Tabs.Discord:Slider({
+    Title = "Интервал авто-отчета (мин)",
+    Value = { Min = 2, Max = 30, Default = 10 },
+    Step = 1,
+    Callback = function(val)
+        Flags.PeriodicInterval = val
     end
 })
 
@@ -828,6 +1025,7 @@ _G.StealDNAScriptUnload = function()
     Flags.AutoUpgradeMutator = false
     Flags.ESPEnabled = false
     Flags.Noclip = false
+    Flags.WebhookPeriodic = false
     if Character and Character:FindFirstChildOfClass("Humanoid") then
         Character.Humanoid.DisplayName = LocalPlayer.DisplayName
     end
