@@ -123,6 +123,10 @@ local Flags = {
     WebhookMutant = true,
     WebhookPeriodic = false,
     PeriodicInterval = 10,
+    PatrolFarm = false,
+    PatrolOnlySpeed = true,
+    PatrolWaitTime = 0.8,
+    PatrolFlyMode = "Teleport",
 }
 
 -- Статистика текущей игровой сессии
@@ -230,9 +234,10 @@ local function sendSessionReportWebhook()
     local ping = getPing()
 
     local botsSummary = string.format(
-        "• Тренировка: %s\n• Супер-клик (5x): %s\n• Авто-кража: %s\n• Авто-мутатор: %s",
+        "• Тренировка: %s\n• Супер-клик (5x): %s\n• Авто-облёт карты: %s\n• Авто-кража цели: %s\n• Авто-мутатор: %s",
         Flags.AutoTrain and "ВКЛ ✅" or "ВЫКЛ ❌",
         Flags.FastClick and "ВКЛ ✅" or "ВЫКЛ ❌",
+        Flags.PatrolFarm and "ВКЛ ✅" or "ВЫКЛ ❌",
         Flags.AutoSteal and ("ВКЛ ✅ (" .. tostring(Flags.SelectedAnimal) .. ")") or "ВЫКЛ ❌",
         Flags.AutoFinishMutation and "ВКЛ ✅" or "ВЫКЛ ❌"
     )
@@ -366,7 +371,305 @@ Tabs.Farm:Toggle({
     end
 })
 
-Tabs.Farm:Section({ Title = "Кража ДНК животных" })
+-- ====================================================================
+-- ЛОГИКА БИОМОВ И ПРОГРУЗКИ ЧАНКОВ (StreamingEnabled)
+-- ====================================================================
+
+local biomes = {
+    { Name = "Лес (Forest)", Z = 100, MinSpeed = 0 },
+    { Name = "Озеро (Lake)", Z = 350, MinSpeed = 50 },
+    { Name = "Пустыня (Desert)", Z = 650, MinSpeed = 200 },
+    { Name = "Джунгли (Jungle)", Z = 950, MinSpeed = 600 },
+    { Name = "Снег (Snow)", Z = 1250, MinSpeed = 1500 },
+    { Name = "Вулкан (Volcano)", Z = 1700, MinSpeed = 3500 },
+    { Name = "Бездна (Abyss)", Z = 2100, MinSpeed = 8000 },
+    { Name = "Доисторический (Prehistoric)", Z = 2600, MinSpeed = 15000 },
+    { Name = "Смерть (Death)", Z = 3000, MinSpeed = 30000 },
+    { Name = "Радуга (Rainbow)", Z = 3500, MinSpeed = 60000 },
+}
+
+local function requestStreamChunk(pos)
+    pcall(function()
+        if LocalPlayer.RequestStreamAroundAsync then
+            LocalPlayer:RequestStreamAroundAsync(pos)
+        elseif workspace.RequestStreamAroundAsync then
+            workspace:RequestStreamAroundAsync(pos)
+        end
+    end)
+end
+
+local function getEstimatedBiomeZ(speed)
+    speed = tonumber(speed) or 0
+    local targetZ = biomes[1].Z
+    for i = #biomes, 1, -1 do
+        if speed >= biomes[i].MinSpeed then
+            targetZ = biomes[i].Z
+            break
+        end
+    end
+    return targetZ
+end
+
+-- Универсальная функция кражи ДНК у конкретного животного (Model)
+local function stealAnimalModel(animal)
+    if not animal or animal:GetAttribute("State") ~= "Sleep" then return false end
+    local aId = animal:GetAttribute("AnimalId")
+    if not aId then return false end
+
+    local hrpTarget = animal:WaitForChild("HumanoidRootPart", 1.5)
+    local promptAt = hrpTarget and hrpTarget:WaitForChild("PromptAt", 1.5)
+    local stealPrompt = promptAt and promptAt:WaitForChild("StealPrompt", 1.5)
+
+    if not stealPrompt then return false end
+
+    if LocalPlayer:GetAttribute("Training") then
+        Net.Fire("TrainStop")
+        task.wait(0.15)
+    end
+
+    if HRP and hrpTarget then
+        HRP.CFrame = hrpTarget.CFrame * CFrame.new(0, 0, 3)
+        task.wait(0.2)
+    end
+
+    if fireproximityprompt then
+        fireproximityprompt(stealPrompt)
+    end
+
+    task.wait(0.35)
+
+    if Flags.AutoSafeEscape then
+        local plotCF = getMyPlotCFrame()
+        if plotCF and HRP then
+            HRP.CFrame = plotCF
+        elseif HRP then
+            HRP.CFrame = CFrame.new(0, 5, 0)
+        end
+    end
+
+    WindUI:Notify({
+        Title = "ДНК украдено!",
+        Content = "+1 ДНК " .. tostring(aId) .. " успешно получено!",
+        Duration = 2.5
+    })
+
+    SessionStats.DnaStolen = SessionStats.DnaStolen + 1
+    SessionStats.LastDnaAnimal = tostring(aId)
+
+    if Flags.WebhookSteal then
+        local pName = Flags.StreamerMode and "[Скрыто на демке]" or (LocalPlayer.Name .. " (" .. LocalPlayer.DisplayName .. ")")
+        local curSpeed = tonumber(LocalPlayer:GetAttribute("Speed")) or tonumber(getPlayerSpeed()) or 0
+        local reqSpeed = (Config.Animals and Config.Animals[aId] and Config.Animals[aId].Speed) or 0
+        local diff = curSpeed - reqSpeed
+        local diffStr = diff >= 0 and ("+" .. diff .. " запас ✅") or (diff .. " нехватка ⚠️")
+        local curCash = getPlayerCash()
+        local uptime = formatDuration(os.time() - SessionStats.StartTime)
+
+        sendDiscordWebhook(
+            "🧬 Успешная кража ДНК: " .. tostring(aId),
+            "Игрок успешно украл ДНК и ушел в безопасную зону за SafeLine!",
+            65416,
+            {
+                { name = "🐾 Добыча", value = tostring(aId), inline = true },
+                { name = "⚡ Требуемая скорость", value = tostring(reqSpeed), inline = true },
+                { name = "🏃 Скорость игрока", value = tostring(curSpeed) .. " (" .. diffStr .. ")", inline = true },
+
+                { name = "💰 Баланс", value = "$" .. curCash, inline = true },
+                { name = "🏡 База", value = "Plot #" .. tostring(LocalPlayer:GetAttribute("Plot") or "?"), inline = true },
+                { name = "🛡️ Уход за SafeLine", value = Flags.AutoSafeEscape and "Мгновенный ✅" or "Ручной ⚠️", inline = true },
+
+                { name = "📊 Всего за сессию", value = tostring(SessionStats.DnaStolen) .. " ДНК", inline = true },
+                { name = "⏱️ Время в игре", value = uptime, inline = true },
+                { name = "👤 Игрок", value = pName, inline = true },
+            }
+        )
+    end
+
+    return true
+end
+
+-- Кража конкретного выбранного вида животного с догрузкой чанка
+local function stealDnaOnce(targetAnimalId)
+    local animalsFolder = workspace:FindFirstChild("Animals")
+    if not animalsFolder then
+        WindUI:Notify({ Title = "Ошибка", Content = "Папка Animals не найдена!", Duration = 3 })
+        return false
+    end
+
+    local function findSleepingAnimal()
+        for _, animal in ipairs(animalsFolder:GetChildren()) do
+            if animal:GetAttribute("AnimalId") == targetAnimalId and animal:GetAttribute("State") == "Sleep" then
+                return animal
+            end
+        end
+        return nil
+    end
+
+    local targetModel = findSleepingAnimal()
+
+    -- Если животное не видно (не прогрузился чанк из-за расстояния / StreamingEnabled)
+    if not targetModel then
+        local reqSpeed = (Config.Animals and Config.Animals[targetAnimalId] and Config.Animals[targetAnimalId].Speed) or 0
+        local targetZ = getEstimatedBiomeZ(reqSpeed)
+
+        if HRP then
+            if LocalPlayer:GetAttribute("Training") then
+                Net.Fire("TrainStop")
+                task.wait(0.15)
+            end
+            HRP.CFrame = CFrame.new(0, 15, targetZ)
+            requestStreamChunk(Vector3.new(0, 5, targetZ))
+
+            -- Ожидание прогрузки чанка
+            local startWait = tick()
+            while (tick() - startWait) < 1.2 do
+                targetModel = findSleepingAnimal()
+                if targetModel then break end
+                task.wait(0.15)
+            end
+        end
+    end
+
+    if not targetModel then
+        WindUI:Notify({
+            Title = "Животное не найдено",
+            Content = targetAnimalId .. " сейчас бодрствует или не заспавнено в чанке!",
+            Duration = 3
+        })
+        return false
+    end
+
+    return stealAnimalModel(targetModel)
+end
+
+-- Цикл патрулирования и облёта всех биомов карты
+local function runPatrolFarmStep()
+    local animalsFolder = workspace:FindFirstChild("Animals")
+    if not animalsFolder then return end
+
+    for _, biome in ipairs(biomes) do
+        if not Flags.PatrolFarm then break end
+
+        local biomeZ = biome.Z
+        local mySpeed = tonumber(LocalPlayer:GetAttribute("Speed")) or tonumber(getPlayerSpeed()) or 0
+
+        -- Если включен фильтр по скорости и требуемая скорость биома намного выше нашей, пропускаем
+        if Flags.PatrolOnlySpeed and biome.MinSpeed > (mySpeed + 50) and biome.MinSpeed > 100 then
+            continue
+        end
+
+        if LocalPlayer:GetAttribute("Training") then
+            Net.Fire("TrainStop")
+            task.wait(0.1)
+        end
+
+        -- Перемещение в биом
+        if HRP then
+            if Flags.PatrolFlyMode == "Tween" then
+                local dist = (HRP.Position - Vector3.new(0, 15, biomeZ)).Magnitude
+                local duration = math.clamp(dist / 250, 0.4, 2.5)
+                local tween = TweenService:Create(HRP, TweenInfo.new(duration, Enum.EasingStyle.Linear), {
+                    CFrame = CFrame.new(0, 15, biomeZ)
+                })
+                tween:Play()
+                tween.Completed:Wait()
+            else
+                HRP.CFrame = CFrame.new(0, 15, biomeZ)
+            end
+        end
+
+        -- Запрос прогрузки чанка
+        requestStreamChunk(Vector3.new(0, 5, biomeZ))
+        task.wait(Flags.PatrolWaitTime)
+
+        -- Поиск кандидатов в данном биоме
+        local candidates = {}
+        for _, animal in ipairs(animalsFolder:GetChildren()) do
+            local aId = animal:GetAttribute("AnimalId")
+            local aState = animal:GetAttribute("State")
+            local hrpTarget = animal:FindFirstChild("HumanoidRootPart")
+
+            if aId and aState == "Sleep" and hrpTarget then
+                local zDist = math.abs(hrpTarget.Position.Z - biomeZ)
+                if zDist < 250 then
+                    local reqSpeed = (Config.Animals and Config.Animals[aId] and Config.Animals[aId].Speed) or 0
+                    if not Flags.PatrolOnlySpeed or mySpeed >= reqSpeed then
+                        table.insert(candidates, animal)
+                    end
+                end
+            end
+        end
+
+        -- Сбор ДНК у всех найденных спящих животных
+        for _, animal in ipairs(candidates) do
+            if not Flags.PatrolFarm then break end
+            if animal and animal:GetAttribute("State") == "Sleep" then
+                stealAnimalModel(animal)
+                task.wait(0.35)
+                -- Если телепортировались на базу для сдачи ДНК, возвращаемся в биом для продолжения сбора
+                if Flags.AutoSafeEscape and HRP and Flags.PatrolFarm then
+                    HRP.CFrame = CFrame.new(0, 15, biomeZ)
+                    task.wait(0.2)
+                end
+            end
+        end
+
+        task.wait(0.3)
+    end
+end
+
+-- ====================================================================
+-- ЭЛЕМЕНТЫ ВКЛАДКИ "ФАРМ И КРАЖА"
+-- ====================================================================
+
+Tabs.Farm:Section({ Title = "🌍 Авто-облёт локаций (Решение непрогруза)" })
+
+Tabs.Farm:Toggle({
+    Title = "Авто-облёт всех биомов (Patrol)",
+    Desc = "Последовательно облетает все локации карты, прогружает чанки и ворует ДНК у всех доступных спящих животных",
+    Value = false,
+    Callback = function(val)
+        Flags.PatrolFarm = val
+        if val then
+            task.spawn(function()
+                while Flags.PatrolFarm do
+                    runPatrolFarmStep()
+                    task.wait(1)
+                end
+            end)
+        end
+    end
+})
+
+Tabs.Farm:Toggle({
+    Title = "Только доступные по скорости",
+    Desc = "Собирает ДНК только у тех животных, для которых хватает скорости персонажа",
+    Value = true,
+    Callback = function(val)
+        Flags.PatrolOnlySpeed = val
+    end
+})
+
+Tabs.Farm:Dropdown({
+    Title = "Режим перемещения между локациями",
+    Values = { "Мгновенный (Телепорт)", "Плавный (Полёт)" },
+    Value = "Мгновенный (Телепорт)",
+    Callback = function(sel)
+        Flags.PatrolFlyMode = (sel == "Плавный (Полёт)") and "Tween" or "Teleport"
+    end
+})
+
+Tabs.Farm:Slider({
+    Title = "Задержка прогрузки биома (сек)",
+    Desc = "Время ожидания прогрузки чанка и животных в каждой зоне",
+    Value = { Min = 0.4, Max = 3.0, Default = 0.8 },
+    Step = 0.1,
+    Callback = function(val)
+        Flags.PatrolWaitTime = val
+    end
+})
+
+Tabs.Farm:Section({ Title = "🎯 Точечная кража (Выбранное животное)" })
 
 local animalOptions = {}
 for id, data in pairs(Config.Animals or {}) do
@@ -388,107 +691,9 @@ Tabs.Farm:Dropdown({
     end
 })
 
-local function stealDnaOnce(targetAnimalId)
-    local animalsFolder = workspace:FindFirstChild("Animals")
-    if not animalsFolder then
-        WindUI:Notify({ Title = "Ошибка", Content = "Папка Animals не найдена!", Duration = 3 })
-        return false
-    end
-
-    local targetModel = nil
-    for _, animal in ipairs(animalsFolder:GetChildren()) do
-        if animal:GetAttribute("AnimalId") == targetAnimalId and animal:GetAttribute("State") == "Sleep" then
-            targetModel = animal
-            break
-        end
-    end
-
-    if not targetModel then
-        WindUI:Notify({
-            Title = "Животное не найдено",
-            Content = targetAnimalId .. " сейчас бодрствует или не заспавнен!",
-            Duration = 3
-        })
-        return false
-    end
-
-    local promptAt = targetModel:FindFirstChild("HumanoidRootPart") and targetModel.HumanoidRootPart:FindFirstChild("PromptAt")
-    local stealPrompt = promptAt and promptAt:FindFirstChild("StealPrompt")
-
-    if not stealPrompt then
-        WindUI:Notify({ Title = "Ошибка", Content = "У животного нет StealPrompt!", Duration = 3 })
-        return false
-    end
-
-    if LocalPlayer:GetAttribute("Training") then
-        Net.Fire("TrainStop")
-        task.wait(0.2)
-    end
-
-    if HRP and targetModel:FindFirstChild("HumanoidRootPart") then
-        HRP.CFrame = targetModel.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
-        task.wait(0.2)
-    end
-
-    if fireproximityprompt then
-        fireproximityprompt(stealPrompt)
-    end
-
-    task.wait(0.35)
-
-    if Flags.AutoSafeEscape then
-        local plotCF = getMyPlotCFrame()
-        if plotCF and HRP then
-            HRP.CFrame = plotCF
-        elseif HRP then
-            HRP.CFrame = CFrame.new(0, 5, 0)
-        end
-    end
-
-    WindUI:Notify({
-        Title = "ДНК украдено!",
-        Content = "+1 ДНК " .. targetAnimalId .. " успешно получено!",
-        Duration = 3
-    })
-
-    SessionStats.DnaStolen = SessionStats.DnaStolen + 1
-    SessionStats.LastDnaAnimal = tostring(targetAnimalId)
-
-    if Flags.WebhookSteal then
-        local pName = Flags.StreamerMode and "[Скрыто на демке]" or (LocalPlayer.Name .. " (" .. LocalPlayer.DisplayName .. ")")
-        local curSpeed = tonumber(LocalPlayer:GetAttribute("Speed")) or tonumber(getPlayerSpeed()) or 0
-        local reqSpeed = (Config.Animals and Config.Animals[targetAnimalId] and Config.Animals[targetAnimalId].Speed) or 0
-        local diff = curSpeed - reqSpeed
-        local diffStr = diff >= 0 and ("+" .. diff .. " запас ✅") or (diff .. " нехватка ⚠️")
-        local curCash = getPlayerCash()
-        local uptime = formatDuration(os.time() - SessionStats.StartTime)
-
-        sendDiscordWebhook(
-            "🧬 Успешная кража ДНК: " .. tostring(targetAnimalId),
-            "Игрок успешно украл ДНК и ушел в безопасную зону за SafeLine!",
-            65416,
-            {
-                { name = "🐾 Добыча", value = tostring(targetAnimalId), inline = true },
-                { name = "⚡ Требуемая скорость", value = tostring(reqSpeed), inline = true },
-                { name = "🏃 Скорость игрока", value = tostring(curSpeed) .. " (" .. diffStr .. ")", inline = true },
-
-                { name = "💰 Баланс", value = "$" .. curCash, inline = true },
-                { name = "🏡 База", value = "Plot #" .. tostring(LocalPlayer:GetAttribute("Plot") or "?"), inline = true },
-                { name = "🛡️ Уход за SafeLine", value = Flags.AutoSafeEscape and "Мгновенный ✅" or "Ручной ⚠️", inline = true },
-
-                { name = "📊 Всего за сессию", value = tostring(SessionStats.DnaStolen) .. " ДНК", inline = true },
-                { name = "⏱️ Время в игре", value = uptime, inline = true },
-                { name = "👤 Игрок", value = pName, inline = true },
-            }
-        )
-    end
-
-    return true
-end
-
 Tabs.Farm:Button({
     Title = "Украсть ДНК выбранного животного",
-    Desc = "Мгновенно телепортирует к животному, ворует ДНК и возвращает за безопасную черту",
+    Desc = "Телепортируется в биом, прогружает чанк, ворует ДНК и возвращается на базу",
     Callback = function()
         stealDnaOnce(Flags.SelectedAnimal)
     end
@@ -496,7 +701,7 @@ Tabs.Farm:Button({
 
 Tabs.Farm:Toggle({
     Title = "Авто-кража ДНК (Цикл)",
-    Desc = "Постоянно ворует ДНК выбранного животного по кулдауну",
+    Desc = "Постоянно ворует ДНК выбранного животного по кулдауну с авто-прогрузкой",
     Value = false,
     Callback = function(val)
         Flags.AutoSteal = val
@@ -796,19 +1001,6 @@ Tabs.Teleports:Button({
 
 Tabs.Teleports:Section({ Title = "Зоны и Биомы" })
 
-local biomes = {
-    { Name = "Лес (Forest)", Z = 100 },
-    { Name = "Озеро (Lake)", Z = 350 },
-    { Name = "Пустыня (Desert)", Z = 650 },
-    { Name = "Джунгли (Jungle)", Z = 950 },
-    { Name = "Снег (Snow)", Z = 1250 },
-    { Name = "Вулкан (Volcano)", Z = 1700 },
-    { Name = "Бездна (Abyss)", Z = 2100 },
-    { Name = "Доисторический (Prehistoric)", Z = 2600 },
-    { Name = "Смерть (Death)", Z = 3000 },
-    { Name = "Радуга (Rainbow)", Z = 3500 },
-}
-
 local biomeNames = {}
 for _, b in ipairs(biomes) do
     table.insert(biomeNames, b.Name)
@@ -1020,6 +1212,7 @@ _G.StealDNAScriptUnload = function()
     Flags.FastClick = false
     Flags.AutoUpgradeTreadmill = false
     Flags.AutoSteal = false
+    Flags.PatrolFarm = false
     Flags.AutoFinishMutation = false
     Flags.AutoUpgradePlot = false
     Flags.AutoUpgradeMutator = false
