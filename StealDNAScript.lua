@@ -189,7 +189,8 @@ local Flags = {
     FastClick = false,
     AutoUpgradeTreadmill = false,
     AutoSteal = false,
-    SelectedAnimal = "Bear",
+    SelectedBiome = "Радуга (Rainbow)",
+    SelectedAnimal = "Unicorn",
     AutoSafeEscape = true,
     StealDelay = 2,
     AutoFinishMutation = false,
@@ -213,6 +214,7 @@ local Flags = {
     PatrolFarm = false,
     PatrolScope = "All",
     PatrolSelectedBiome = "Радуга (Rainbow)",
+    PatrolTargetAnimal = "All",
     PatrolOnlySpeed = false,
     PatrolDirection = "TopDown",
     PatrolPriority = "BestFirst",
@@ -479,17 +481,162 @@ Tabs.Farm:Toggle({
 -- ====================================================================
 
 local biomes = {
-    { Name = "Лес (Forest)", Z = 100, MinSpeed = 0 },
-    { Name = "Озеро (Lake)", Z = 350, MinSpeed = 50 },
-    { Name = "Пустыня (Desert)", Z = 650, MinSpeed = 200 },
-    { Name = "Джунгли (Jungle)", Z = 950, MinSpeed = 600 },
-    { Name = "Снег (Snow)", Z = 1250, MinSpeed = 1500 },
-    { Name = "Вулкан (Volcano)", Z = 1700, MinSpeed = 3500 },
-    { Name = "Бездна (Abyss)", Z = 2100, MinSpeed = 8000 },
-    { Name = "Доисторический (Prehistoric)", Z = 2600, MinSpeed = 15000 },
-    { Name = "Смерть (Death)", Z = 3000, MinSpeed = 30000 },
-    { Name = "Радуга (Rainbow)", Z = 3500, MinSpeed = 60000 },
+    { Name = "Лес (Forest)", Id = "Forest", Area = 1, Z = 100, MinSpeed = 0 },
+    { Name = "Озеро (Lake)", Id = "Lake", Area = 2, Z = 350, MinSpeed = 50 },
+    { Name = "Пустыня (Desert)", Id = "Desert", Area = 3, Z = 650, MinSpeed = 200 },
+    { Name = "Джунгли (Jungle)", Id = "Jungle", Area = 4, Z = 950, MinSpeed = 600 },
+    { Name = "Снег (Snow)", Id = "Snow", Area = 5, Z = 1250, MinSpeed = 1500 },
+    { Name = "Вулкан (Volcano)", Id = "Volcano", Area = 6, Z = 1700, MinSpeed = 3500 },
+    { Name = "Бездна (Abyss)", Id = "Abyss", Area = 7, Z = 2100, MinSpeed = 8000 },
+    { Name = "Доисторический (Prehistoric)", Id = "Prehistoric", Area = 8, Z = 2600, MinSpeed = 15000 },
+    { Name = "Смерть (Death)", Id = "Death", Area = 9, Z = 3000, MinSpeed = 30000 },
+    { Name = "Радуга (Rainbow)", Id = "Rainbow", Area = 10, Z = 3500, MinSpeed = 60000 },
+    { Name = "Космос (Galaxy)", Id = "Galaxy", Area = 11, Z = 4050, MinSpeed = 110000 },
 }
+
+local animalsByBiomeData = {
+    [1] = {
+        { Id = "Wolf", Name = "Волк", Speed = 45 },
+        { Id = "Deer", Name = "Олень", Speed = 30 },
+        { Id = "Bear", Name = "Медведь", Speed = 15 },
+    },
+    [2] = {
+        { Id = "Ostrich", Name = "Страус", Speed = 220 },
+        { Id = "Fox", Name = "Лиса", Speed = 150 },
+        { Id = "Boar", Name = "Кабан", Speed = 100 },
+    },
+    [3] = {
+        { Id = "Camel", Name = "Верблюд", Speed = 1200 },
+        { Id = "BactrianCamel", Name = "Двугорбый верблюд", Speed = 1000 },
+        { Id = "Scorpion", Name = "Скорпион", Speed = 800 },
+        { Id = "Snake", Name = "Змея", Speed = 650 },
+        { Id = "Turtle", Name = "Черепаха", Speed = 450 },
+    },
+    [4] = {
+        { Id = "Eagle", Name = "Орел", Speed = 8000 },
+        { Id = "Tiger", Name = "Тигр", Speed = 6500 },
+        { Id = "Lion", Name = "Лев", Speed = 5500 },
+        { Id = "Giraffe", Name = "Жираф", Speed = 4500 },
+        { Id = "Gorilla", Name = "Горилла", Speed = 3500 },
+    },
+    [5] = {
+        { Id = "SnowLeopard", Name = "Снежный барс", Speed = 45000 },
+        { Id = "PolarBear", Name = "Белый медведь", Speed = 32000 },
+        { Id = "Yeti", Name = "Йети", Speed = 25000 },
+        { Id = "Penguin", Name = "Пингвин", Speed = 18000 },
+    },
+    [6] = {
+        { Id = "Dragon", Name = "Дракон", Speed = 300000 },
+        { Id = "FireHound", Name = "Огненная гончая", Speed = 180000 },
+    },
+    [7] = {
+        { Id = "Shark", Name = "Акула", Speed = 2200000 },
+        { Id = "Octopus", Name = "Осьминог", Speed = 1400000 },
+        { Id = "Whale", Name = "Кит", Speed = 1000000 },
+    },
+    [8] = {
+        { Id = "Spinosaurus", Name = "Спинозавр", Speed = 14000000 },
+        { Id = "TRex", Name = "Ти-Рекс", Speed = 11000000 },
+        { Id = "Sauropod", Name = "Зауропод", Speed = 7000000 },
+    },
+    [9] = {
+        { Id = "HeadlessHorseman", Name = "Всадник без головы", Speed = 32000000 },
+        { Id = "Skeleton", Name = "Скелет", Speed = 25000000 },
+        { Id = "ZombieDog", Name = "Зомби-собака", Speed = 18000000 },
+    },
+    [10] = {
+        { Id = "Unicorn", Name = "Единорог", Speed = 80000000 },
+        { Id = "ChocolateBunny", Name = "Шоколадный кролик", Speed = 62000000 },
+        { Id = "GummyBear", Name = "Мармеладный мишка", Speed = 45000000 },
+    },
+    [11] = {
+        { Id = "Mecha", Name = "Меха Титан", Speed = 150000000 },
+        { Id = "Alien", Name = "Пришелец", Speed = 110000000 },
+    },
+}
+
+local function formatSpeedNum(n)
+    n = tonumber(n) or 0
+    if n >= 1000000000 then
+        return string.format("%.1fB", n / 1000000000)
+    elseif n >= 1000000 then
+        return string.format("%.1fM", n / 1000000)
+    elseif n >= 1000 then
+        return string.format("%.1fk", n / 1000)
+    else
+        return tostring(n)
+    end
+end
+
+local function getBiomeObject(biomeName)
+    if not biomeName then return biomes[#biomes] end
+    for _, b in ipairs(biomes) do
+        if b.Name == biomeName or b.Id == biomeName or string.find(biomeName, b.Id, 1, true) or string.find(biomeName, b.Name, 1, true) then
+            return b
+        end
+    end
+    return biomes[1]
+end
+
+local function getAnimalsForBiome(biomeName)
+    local bObj = getBiomeObject(biomeName)
+    local areaIdx = bObj and bObj.Area or 10
+    local list = {}
+
+    if Config and Config.Animals then
+        for aId, data in pairs(Config.Animals) do
+            if data.Area == areaIdx or tostring(data.Area) == tostring(areaIdx) then
+                local dName = data.Name or aId
+                table.insert(list, {
+                    Id = aId,
+                    Name = dName,
+                    Speed = data.Speed or 0,
+                    Display = aId .. " (" .. dName .. ") [" .. formatSpeedNum(data.Speed) .. " ⚡]"
+                })
+            end
+        end
+    end
+
+    if #list == 0 and animalsByBiomeData[areaIdx] then
+        for _, it in ipairs(animalsByBiomeData[areaIdx]) do
+            table.insert(list, {
+                Id = it.Id,
+                Name = it.Name,
+                Speed = it.Speed or 0,
+                Display = it.Id .. " (" .. it.Name .. ") [" .. formatSpeedNum(it.Speed) .. " ⚡]"
+            })
+        end
+    end
+
+    table.sort(list, function(a, b)
+        return (a.Speed or 0) > (b.Speed or 0)
+    end)
+
+    return list
+end
+
+local function parseAnimalIdFromOption(str)
+    if not str or string.find(str, "Все животные") then
+        return "All"
+    end
+    local id = string.match(str, "^([%w_]+)")
+    return id or "All"
+end
+
+local function getBiomeDropdownOptions(biomeName, includeAll)
+    local aList = getAnimalsForBiome(biomeName)
+    local opts = {}
+    if includeAll then
+        table.insert(opts, "🌟 Все животные зоны (Топ первыми)")
+    end
+    for _, a in ipairs(aList) do
+        table.insert(opts, a.Display)
+    end
+    if #opts == 0 then
+        table.insert(opts, "Нет доступных животных")
+    end
+    return opts
+end
 
 local function requestStreamChunk(pos)
     pcall(function()
@@ -501,7 +648,13 @@ local function requestStreamChunk(pos)
     end)
 end
 
-local function getEstimatedBiomeZ(speed)
+local function getEstimatedBiomeZ(speed, animalId)
+    if animalId and Config and Config.Animals and Config.Animals[animalId] then
+        local areaIdx = tonumber(Config.Animals[animalId].Area)
+        if areaIdx and biomes[areaIdx] then
+            return biomes[areaIdx].Z
+        end
+    end
     speed = tonumber(speed) or 0
     local targetZ = biomes[1].Z
     for i = #biomes, 1, -1 do
@@ -617,7 +770,7 @@ local function stealDnaOnce(targetAnimalId)
     -- Если животное не видно (не прогрузился чанк из-за расстояния / StreamingEnabled)
     if not targetModel then
         local reqSpeed = (Config.Animals and Config.Animals[targetAnimalId] and Config.Animals[targetAnimalId].Speed) or 0
-        local targetZ = getEstimatedBiomeZ(reqSpeed)
+        local targetZ = getEstimatedBiomeZ(reqSpeed, targetAnimalId)
 
         if HRP then
             if LocalPlayer:GetAttribute("Training") then
@@ -721,6 +874,13 @@ local function runPatrolFarmStep()
             local hrpTarget = animal:FindFirstChild("HumanoidRootPart")
 
             if aId and aState == "Sleep" and hrpTarget then
+                -- Если в режиме одной зоны выбрано конкретное животное для кражи
+                if Flags.PatrolScope == "Single" and Flags.PatrolTargetAnimal and Flags.PatrolTargetAnimal ~= "All" then
+                    if aId ~= Flags.PatrolTargetAnimal then
+                        continue
+                    end
+                end
+
                 local zDist = math.abs(hrpTarget.Position.Z - biomeZ)
                 if zDist < 400 then
                     local reqSpeed = (Config.Animals and Config.Animals[aId] and Config.Animals[aId].Speed) or 0
@@ -806,13 +966,32 @@ for _, b in ipairs(biomes) do
     table.insert(biomeNamesList, b.Name)
 end
 
+local patrolAnimalDropdown = nil
+
 Tabs.Farm:Dropdown({
     Title = "Выберите локацию для фарма",
     Desc = "Активно при режиме 'Только одна выбранная локация'",
     Values = biomeNamesList,
-    Value = biomeNamesList[#biomeNamesList],
+    Value = "Радуга (Rainbow)",
     Callback = function(sel)
         Flags.PatrolSelectedBiome = sel
+        local newOpts = getBiomeDropdownOptions(sel, true)
+        Flags.PatrolTargetAnimal = "All"
+        if patrolAnimalDropdown and patrolAnimalDropdown.Refresh then
+            patrolAnimalDropdown:Refresh(newOpts)
+            pcall(function() patrolAnimalDropdown:Select(newOpts[1]) end)
+        end
+    end
+})
+
+local initialPatrolAnimals = getBiomeDropdownOptions("Радуга (Rainbow)", true)
+patrolAnimalDropdown = Tabs.Farm:Dropdown({
+    Title = "Каких животных красть в этой зоне",
+    Desc = "Выберите конкретное животное из зоны или красть всех подряд",
+    Values = initialPatrolAnimals,
+    Value = initialPatrolAnimals[1],
+    Callback = function(sel)
+        Flags.PatrolTargetAnimal = parseAnimalIdFromOption(sel)
     end
 })
 
@@ -872,23 +1051,34 @@ Tabs.Farm:Slider({
 
 Tabs.Farm:Section({ Title = "🎯 Точечная кража (Выбранное животное)" })
 
-local animalOptions = {}
-for id, data in pairs(Config.Animals or {}) do
-    table.insert(animalOptions, id)
-end
-table.sort(animalOptions, function(a, b)
-    local sa = Config.Animals[a] and Config.Animals[a].Speed or 0
-    local sb = Config.Animals[b] and Config.Animals[b].Speed or 0
-    return sa < sb
-end)
+local singleStealAnimalDropdown = nil
 
 Tabs.Farm:Dropdown({
-    Title = "Выберите животное для кражи",
-    Desc = "Животные отсортированы по требуемой скорости",
-    Values = animalOptions,
-    Value = "Bear",
-    Callback = function(selected)
-        Flags.SelectedAnimal = selected
+    Title = "1. Выберите биом / зону",
+    Desc = "Фильтрует список животных — останутся только те, что обитают в этой зоне",
+    Values = biomeNamesList,
+    Value = "Радуга (Rainbow)",
+    Callback = function(sel)
+        Flags.SelectedBiome = sel
+        local newOpts = getBiomeDropdownOptions(sel, false)
+        Flags.SelectedAnimal = parseAnimalIdFromOption(newOpts[1])
+        if singleStealAnimalDropdown and singleStealAnimalDropdown.Refresh then
+            singleStealAnimalDropdown:Refresh(newOpts)
+            pcall(function() singleStealAnimalDropdown:Select(newOpts[1]) end)
+        end
+    end
+})
+
+local initialSingleAnimals = getBiomeDropdownOptions("Радуга (Rainbow)", false)
+Flags.SelectedAnimal = parseAnimalIdFromOption(initialSingleAnimals[1]) or "Unicorn"
+
+singleStealAnimalDropdown = Tabs.Farm:Dropdown({
+    Title = "2. Выберите животное для кражи",
+    Desc = "Отображаются только животные выбранной зоны (отсортированы от топа к слабым)",
+    Values = initialSingleAnimals,
+    Value = initialSingleAnimals[1],
+    Callback = function(sel)
+        Flags.SelectedAnimal = parseAnimalIdFromOption(sel)
     end
 })
 
